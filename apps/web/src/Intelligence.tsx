@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from "react";
-type Bot = { id: string; name: string; status: string; ai_mode?: string };
+type Bot = {
+  id: string;
+  name: string;
+  status: string;
+  ai_mode?: string;
+  symbol: string;
+};
 type Analysis = {
   id: string;
   bot_id: string;
+  symbol: string;
   bot_name: string;
   mode: string;
   status: string;
@@ -144,7 +151,9 @@ export function Intelligence({
                 <div className="ai-bot-row" key={b.id}>
                   <div>
                     <strong>{b.name}</strong>
-                    <small>{b.status} · BTCUSDT · 15m</small>
+                    <small>
+                      {b.status} · {b.symbol} · 15m
+                    </small>
                   </div>
                   <label>
                     <span className="sr-only">AI mode for {b.name}</span>
@@ -215,7 +224,7 @@ export function Intelligence({
             <section className="panel">
               <div className="section-heading">
                 <div>
-                  <span className="badge">BTCUSDT · 15m</span>
+                  <span className="badge">{latest.symbol} · 15m</span>
                   <h2>{r.marketRegime.replaceAll("_", " ")}</h2>
                 </div>
                 <span className={"status " + (!stale ? "running" : "")}>

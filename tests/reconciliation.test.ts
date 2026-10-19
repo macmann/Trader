@@ -112,6 +112,69 @@ test("reconciliation applies exchange fills exactly once across restart and hand
   assert.equal(Number(position.cost), 50);
   assert.equal(Number(position.realized_pnl), 5);
   assert.equal(Number(position.fees), 0.155);
+
+  const ethBot = randomUUID(),
+    ethOrder = randomUUID(),
+    ethClient = randomUUID();
+  await tenant(tid, async (db) => {
+    await db.query(
+      "INSERT INTO bots(id,tenant_id,connection_id,name,symbol,config) VALUES($1,$2,$3,'ETH fixture','ETHUSDT','{}')",
+      [ethBot, tid, cid],
+    );
+    await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [
+      ethBot,
+      tid,
+    ]);
+    await db.query(
+      "INSERT INTO orders(id,tenant_id,bot_id,client_id,side,quantity,state,symbol,requested_notional) VALUES($1,$2,$3,$4,'Buy',2,'SUBMITTED','ETHUSDT',200)",
+      [ethOrder, tid, ethBot, ethClient],
+    );
+  });
+  fills = [
+    ...fills,
+    {
+      ...fill,
+      execId: randomUUID(),
+      orderLinkId: ethClient,
+      execQty: "1",
+      execPrice: "100",
+      execFee: "0.1",
+    },
+    {
+      ...fill,
+      execId: randomUUID(),
+      orderLinkId: ethClient,
+      execQty: "1",
+      execPrice: "100",
+      execFee: "0.1",
+    },
+  ];
+  await tenant(tid, (db) => reconcile(db, tid, cid, adapter));
+  await tenant(tid, (db) => reconcile(db, tid, cid, adapter));
+  const multi = await tenant(
+    tid,
+    async (db) =>
+      (await db.query("SELECT * FROM positions WHERE bot_id=$1", [ethBot]))
+        .rows[0],
+  );
+  assert.equal(Number(multi.quantity), 2);
+  assert.equal(Number(multi.cost), 200);
+  assert.equal(
+    Number(multi.entry_count),
+    1,
+    "Partial fills count as one strategy entry",
+  );
+  const btc = await tenant(
+    tid,
+    async (db) =>
+      (await db.query("SELECT * FROM positions WHERE bot_id=$1", [bid]))
+        .rows[0],
+  );
+  assert.equal(
+    Number(btc.quantity),
+    0.5,
+    "ETH fills never alter the BTC position",
+  );
   adapter.getOpenOrders = async () => ({
     list: [{ orderLinkId: "unknown-order" }],
   });

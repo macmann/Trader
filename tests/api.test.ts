@@ -28,6 +28,7 @@ after(async () => {
         "bots",
         "exchange_connections",
         "audit_logs",
+        "portfolio_limits",
       ])
         await admin.query(`DELETE FROM ${table} WHERE tenant_id=$1`, [tid]);
       await admin.query("DELETE FROM workspaces WHERE id=$1", [tid]);
@@ -327,6 +328,294 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
     (await app.inject({ url: "/api/news", headers: a.headers })).statusCode,
     200,
   );
+
+  const options = (
+    await app.inject({ url: "/api/trading/options", headers: a.headers })
+  ).json();
+  assert.deepEqual(options.symbols, ["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+  assert.equal(options.derivativesSupported, false);
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/bots",
+        headers: a.headers,
+        payload: {
+          name: "No derivatives",
+          connectionId: ca,
+          config: {},
+          symbol: "BTCUSD-PERP",
+        },
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/bots",
+        headers: a.headers,
+        payload: {
+          name: "No derivative mode",
+          connectionId: ca,
+          config: {},
+          marketType: "LINEAR",
+        },
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: "/api/portfolio/limits",
+        headers: a.headers,
+        payload: {
+          maxTotalAllocation: 250,
+          maxConnectionAllocation: 250,
+          maxSymbolAllocation: 150,
+          maxOpenPositions: 2,
+        },
+      })
+    ).statusCode,
+    200,
+  );
+  const creates = await Promise.all(
+    ["ETHUSDT", "SOLUSDT"].map((symbol) =>
+      app.inject({
+        method: "POST",
+        url: "/api/bots",
+        headers: a.headers,
+        payload: {
+          name: symbol + " bot",
+          connectionId: ca,
+          symbol,
+          strategyVersion: "breakout-v1.0",
+          config: {},
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(
+    creates.map((r) => r.statusCode).sort(),
+    [201, 409],
+    "Workspace lock prevents concurrent allocation oversubscription",
+  );
+  const secondId = creates.find((r) => r.statusCode === 201)!.json().id;
+  const portfolio = (
+    await app.inject({ url: "/api/portfolio", headers: a.headers })
+  ).json();
+  assert.equal(portfolio.allocated, 200);
+  assert.equal(
+    (await app.inject({ url: "/api/portfolio", headers: b.headers })).json()
+      .allocated,
+    0,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: "/api/portfolio/limits",
+        headers: a.headers,
+        payload: {
+          maxTotalAllocation: 100,
+          maxConnectionAllocation: 250,
+          maxSymbolAllocation: 150,
+          maxOpenPositions: 2,
+        },
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${secondId}/config`,
+        headers: b.headers,
+        payload: { symbol: "BTCUSDT" },
+      })
+    ).statusCode,
+    404,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${secondId}/config`,
+        headers: a.headers,
+        payload: {
+          strategyVersion: "dca-v1.0",
+          advancedConfig: { sizing: "RISK_PERCENT" },
+        },
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: `/api/bots/${secondId}/start`,
+        headers: a.headers,
+        payload: {},
+      })
+    ).statusCode,
+    409,
+  );
+  const hypothetical = await app.inject({
+    method: "POST",
+    url: `/api/bots/${secondId}/preview`,
+    headers: a.headers,
+    payload: { price: 100, availableBalance: 5000 },
+  });
+  assert.equal(hypothetical.statusCode, 200, hypothetical.body);
+  assert.equal(hypothetical.json().simulationOnly, true);
+  assert.equal(hypothetical.json().orderSubmissionEnabled, false);
+  assert.equal(hypothetical.json().proposal.side, "BUY");
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: `/api/bots/${secondId}/preview`,
+        headers: b.headers,
+        payload: { price: 100, availableBalance: 100 },
+      })
+    ).statusCode,
+    404,
+  );
+  assert.equal(
+    (await app.inject({ url: "/api/orders", headers: a.headers })).json()
+      .length,
+    0,
+    "Preview never creates order records",
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${secondId}/config`,
+        headers: a.headers,
+        payload: {
+          strategyVersion: "trend-v1.0",
+          advancedConfig: { entryType: "LIMIT" },
+        },
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: `/api/bots/${secondId}/start`,
+        headers: a.headers,
+        payload: {},
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${secondId}/config`,
+        headers: a.headers,
+        payload: {
+          strategyVersion: "grid-accumulation-v1.0",
+          advancedConfig: {},
+        },
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${secondId}/config`,
+        headers: a.headers,
+        payload: {
+          strategyVersion: "grid-accumulation-v1.0",
+          advancedConfig: { gridLower: 80, gridUpper: 120, gridLevels: 5 },
+        },
+      })
+    ).statusCode,
+    200,
+  );
+  const pendingId = randomUUID();
+  await tenant(a.tid, async (db) => {
+    const symbol = (
+      await db.query("SELECT symbol FROM bots WHERE id=$1", [secondId])
+    ).rows[0].symbol;
+    await db.query("UPDATE positions SET quantity=1,cost=10 WHERE bot_id=$1", [
+      secondId,
+    ]);
+    await db.query(
+      "INSERT INTO orders(id,tenant_id,bot_id,client_id,side,quantity,state,symbol,requested_notional) VALUES($1,$2,$3,$4,'Buy',1,'SUBMITTED',$5,20)",
+      [pendingId, a.tid, secondId, randomUUID(), symbol],
+    );
+  });
+  const reserved = (
+    await app.inject({ url: "/api/portfolio", headers: a.headers })
+  ).json();
+  assert.equal(reserved.exposure, 10);
+  assert.equal(reserved.reserved, 20);
+  assert.equal(reserved.openPositions, 1);
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${secondId}/config`,
+        headers: a.headers,
+        payload: { symbol: "BTCUSDT" },
+      })
+    ).statusCode,
+    409,
+  );
+  await tenant(a.tid, async (db) => {
+    await db.query("UPDATE orders SET requested_notional=NULL WHERE id=$1", [
+      pendingId,
+    ]);
+  });
+  assert.equal(
+    (await app.inject({ url: "/api/portfolio", headers: a.headers })).json()
+      .unknownPending,
+    true,
+  );
+  await tenant(a.tid, async (db) => {
+    await db.query("UPDATE orders SET state='Cancelled' WHERE id=$1", [
+      pendingId,
+    ]);
+  });
+  const released = (
+    await app.inject({ url: "/api/portfolio", headers: a.headers })
+  ).json();
+  assert.equal(released.reserved, 0);
+  assert.equal(released.unknownPending, false);
+  assert.equal(
+    (
+      await tenant(
+        b.tid,
+        async (db) =>
+          (
+            await db.query(
+              "SELECT * FROM portfolio_limits WHERE tenant_id=$1",
+              [a.tid],
+            )
+          ).rows,
+      )
+    ).length,
+    0,
+  );
+  await tenant(a.tid, async (db) => {
+    await db.query("DELETE FROM orders WHERE id=$1", [pendingId]);
+    await db.query("UPDATE positions SET quantity=0,cost=0 WHERE bot_id=$1", [
+      secondId,
+    ]);
+  });
   const connectionJson = (
     await app.inject({ url: "/api/connections", headers: a.headers })
   ).body;

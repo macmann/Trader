@@ -121,6 +121,18 @@ export function risk(input: {
   available: number;
   spreadPct: number;
 }): string[] {
+  if (
+    ![
+      input.exposure,
+      input.dailyPnl,
+      input.trades,
+      input.drawdownPct,
+      input.consecutiveLosses,
+      input.available,
+      input.spreadPct,
+    ].every(Number.isFinite)
+  )
+    return ["INVALID_RISK_STATE"];
   const r: string[] = [];
   if (input.status !== "RUNNING") r.push("BOT_NOT_RUNNING");
   if (input.environment === "LIVE" && !input.liveEnabled)

@@ -1,4 +1,16 @@
 import {
+  symbols,
+  advancedConfig,
+  evaluateStrategy,
+  entryNotional,
+  protection,
+  exposureVeto,
+  previewOnly,
+  instrumentVeto,
+} from "../../../packages/trading/src/index.ts";
+import { lockPortfolio, portfolioSnapshot } from "../../api/src/portfolio.ts";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import {
   buildMarketInput,
   aiGate,
   entryDecision,
@@ -39,18 +51,26 @@ const feeds = new Map<
     credentials: Credentials;
   }
 >();
-const market = { lastMessage: 0 };
+const market = new Map<string, number>();
+const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
+const wsOptions = proxyUrl ? { agent: new HttpsProxyAgent(proxyUrl) } : {};
 let publicSocket: WebSocket | null = null;
 let closing = false;
 function publicFeed() {
   if (closing) return;
-  const socket = new WebSocket("wss://stream-testnet.bybit.com/v5/public/spot");
+  const socket = new WebSocket(
+    "wss://stream-testnet.bybit.com/v5/public/spot",
+    wsOptions,
+  );
   publicSocket = socket;
   socket.on("open", () =>
     socket.send(
       JSON.stringify({
         op: "subscribe",
-        args: ["tickers.BTCUSDT", "kline.15.BTCUSDT"],
+        args: symbols.flatMap((symbol) => [
+          `tickers.${symbol}`,
+          `kline.15.${symbol}`,
+        ]),
       }),
     ),
   );
@@ -62,19 +82,22 @@ function publicFeed() {
         Number.isFinite(message.ts) &&
         Math.abs(Date.now() - message.ts) < 45000
       )
-        market.lastMessage = Date.now();
+        market.set(message.topic.split(".").at(-1), Date.now());
     } catch {}
   });
   socket.on("error", () => socket.close());
   socket.on("close", () => {
-    market.lastMessage = 0;
+    market.clear();
     if (!closing) setTimeout(publicFeed, 5000);
   });
 }
 function privateFeed(id: string, credentials: Credentials) {
   let feed = feeds.get(id);
   if (feed) return feed;
-  const socket = new WebSocket("wss://stream-testnet.bybit.com/v5/private");
+  const socket = new WebSocket(
+    "wss://stream-testnet.bybit.com/v5/private",
+    wsOptions,
+  );
   feed = { socket, authenticated: false, lastMessage: 0, credentials };
   feeds.set(id, feed);
   const current = feed;
@@ -167,20 +190,23 @@ export async function reconcile(
       fee = new Decimal(fill.execFee);
     if (order.side === "Buy") {
       await db.query(
-        "UPDATE positions SET quantity=$1,cost=$2,fees=fees+$3,updated_at=now() WHERE bot_id=$4 AND tenant_id=$5",
+        "UPDATE positions SET quantity=$1,cost=$2,fees=fees+$3,high_watermark=GREATEST(high_watermark,$6),last_entry_price=$6,last_entry_at=$8,entry_count=entry_count+CASE WHEN (SELECT count(*) FROM executions WHERE order_id=$7)=1 THEN 1 ELSE 0 END,updated_at=now() WHERE bot_id=$4 AND tenant_id=$5",
         [
           qty.plus(q).toString(),
           cost.plus(q.mul(price)).toString(),
           fee.toString(),
           order.bot_id,
           tid,
+          price.toString(),
+          order.id,
+          new Date(Number(fill.execTime)),
         ],
       );
     } else {
       if (q.gt(qty)) throw Error("SELL_EXCEEDS_TRACKED_POSITION");
       const basis = qty.isZero() ? new Decimal(0) : cost.div(qty).mul(q);
       await db.query(
-        "UPDATE positions SET quantity=$1,cost=$2,realized_pnl=realized_pnl+$3,fees=fees+$4,updated_at=now() WHERE bot_id=$5 AND tenant_id=$6",
+        "UPDATE positions SET quantity=$1,cost=$2,realized_pnl=realized_pnl+$3,fees=fees+$4,high_watermark=CASE WHEN $1::numeric=0 THEN 0 ELSE high_watermark END,entry_count=CASE WHEN $1::numeric=0 THEN 0 ELSE entry_count END,updated_at=now() WHERE bot_id=$5 AND tenant_id=$6",
         [
           qty.minus(q).toString(),
           cost.minus(basis).toString(),
@@ -210,6 +236,7 @@ export async function reconcile(
 }
 async function tick(tid: string, botId: string) {
   await tenant(tid, async (db) => {
+    await lockPortfolio(db, tid);
     if (
       !(
         await db.query(
@@ -270,17 +297,19 @@ async function tick(tid: string, botId: string) {
       await audit(db, tid, "BOT_RECONCILED", { botId });
       row.status = "RUNNING";
     }
+    const advanced = advancedConfig.parse(row.advanced_config);
+    if (previewOnly(row.strategy_version, advanced)) return;
     const config = botConfig.parse(row.config),
-      ticker = (await adapter.getTicker("BTCUSDT")).list[0],
+      ticker = (await adapter.getTicker(row.symbol)).list[0],
       price = Number(ticker.lastPrice),
       now = Date.now();
     if (
       !Number.isFinite(price) ||
       price <= 0 ||
-      now - market.lastMessage > 45000
+      now - (market.get(row.symbol) ?? 0) > 45000
     )
       return;
-    const candles = (await adapter.getCandles("BTCUSDT")).filter(
+    const candles = (await adapter.getCandles(row.symbol)).filter(
         (c) => c.time + 900000 <= now,
       ),
       last = candles.at(-1);
@@ -289,10 +318,26 @@ async function tick(tid: string, botId: string) {
       entry = positionQty.gt(0)
         ? new Decimal(p.cost).div(positionQty).toNumber()
         : 0;
-    const stop =
-      positionQty.gt(0) &&
-      (price <= entry * (1 - config.stopLossPct / 100) ||
-        price >= entry * (1 + config.takeProfitPct / 100));
+    const protectionState = protection({
+      price,
+      position: {
+        quantity: Number(p.quantity),
+        cost: Number(p.cost),
+        highWatermark: Number(p.high_watermark),
+        lastEntryPrice: Number(p.last_entry_price),
+        lastEntryAt: p.last_entry_at?.getTime() ?? 0,
+        entryCount: p.entry_count,
+        gridLevelsFilled: p.grid_levels_filled,
+      },
+      stopLossPct: config.stopLossPct,
+      takeProfitPct: config.takeProfitPct,
+      advanced,
+    });
+    await db.query(
+      "UPDATE positions SET high_watermark=$1 WHERE bot_id=$2 AND tenant_id=$3",
+      [protectionState.highWatermark, botId, tid],
+    );
+    const stop = protectionState.exit;
     const mode = (row.ai_mode ?? "OFF") as AIMode;
     const news = mode === "OFF" ? [] : await recentNews(db, last.time + 900000);
     const newsRevision = contextKey(
@@ -306,7 +351,7 @@ async function tick(tid: string, botId: string) {
           tid,
           botId,
           mode,
-          buildMarketInput(candles, news),
+          buildMarketInput(candles, news, Date.now(), row.symbol),
           "NONE",
           false,
           configuredProvider(),
@@ -321,8 +366,23 @@ async function tick(tid: string, botId: string) {
       return;
     }
     const signal = stop
-      ? ({ direction: "EXIT", reasons: ["STOP_LOSS_OR_TAKE_PROFIT"] } as const)
-      : evaluate(candles);
+      ? ({ direction: "EXIT", reasons: [protectionState.reason] } as const)
+      : evaluateStrategy(
+          row.strategy_version,
+          candles,
+          {
+            quantity: Number(p.quantity),
+            cost: Number(p.cost),
+            highWatermark: protectionState.highWatermark,
+            lastEntryPrice: Number(p.last_entry_price),
+            lastEntryAt: p.last_entry_at?.getTime() ?? 0,
+            entryCount: p.entry_count,
+            gridLevelsFilled: p.grid_levels_filled,
+          },
+          advanced,
+          price,
+          now,
+        );
     const balance = await adapter.getBalances(),
       coins = balance.list?.[0]?.coin ?? [],
       available = Number(
@@ -330,18 +390,28 @@ async function tick(tid: string, botId: string) {
       );
     // Fail closed on account-level asset discrepancies. Dedicated Testnet accounts are recommended.
     const accountBtc = Number(
-        coins.find((c: any) => c.coin === "BTC")?.walletBalance ?? 0,
+        coins.find((c: any) => c.coin === row.symbol.replace(/USDT$/, ""))
+          ?.walletBalance ?? 0,
       ),
       tracked = Number(
         (
           await db.query(
-            "SELECT COALESCE(sum(p.quantity),0) AS qty FROM positions p JOIN bots b ON b.id=p.bot_id WHERE b.connection_id=$1 AND p.tenant_id=$2",
-            [row.connection_id, tid],
+            "SELECT COALESCE(sum(p.quantity),0) AS qty FROM positions p JOIN bots b ON b.id=p.bot_id WHERE b.connection_id=$1 AND p.tenant_id=$2 AND b.symbol=$3",
+            [row.connection_id, tid, row.symbol],
           )
         ).rows[0].qty,
       );
     if (Math.abs(accountBtc - tracked) > 0.000001)
       throw Error("UNEXPECTED_ACCOUNT_POSITION");
+    const portfolio = await portfolioSnapshot(db, tid);
+    const connectionExposure = portfolio.connections[row.connection_id];
+    const reservedQuote = connectionExposure?.pending ?? 0;
+    const proposedNotional = entryNotional(
+      config.capital,
+      config.maxTrade,
+      config.stopLossPct,
+      advanced,
+    );
     const stats = (
       await db.query(
         "SELECT count(*) FILTER(WHERE o.side='Buy') AS trades, COALESCE(sum(CASE WHEN o.side='Sell' THEN e.quantity*e.price ELSE -e.quantity*e.price END-e.fee),0) AS cashflow FROM executions e JOIN orders o ON o.id=e.order_id WHERE o.bot_id=$1 AND e.tenant_id=$2 AND e.executed_at>=date_trunc('day',now())",
@@ -358,12 +428,14 @@ async function tick(tid: string, botId: string) {
       Number(stats.cashflow) + Number(p.quantity) * price,
     );
     const rejection = risk({
-      config,
+      config: { ...config, maxTrade: proposedNotional },
       status: row.status,
       environment: row.environment,
       liveEnabled: false,
       connected: true,
-      fresh: now - last.time < 1800000 && now - market.lastMessage < 45000,
+      fresh:
+        now - last.time < 1800000 &&
+        now - (market.get(row.symbol) ?? 0) < 45000,
       reconciled: true,
       globalStop: controls.execution_stopped,
       exposure: Number(p.cost),
@@ -381,10 +453,25 @@ async function tick(tid: string, botId: string) {
           100,
       ),
       consecutiveLosses: 0,
-      available,
+      available: Math.max(0, available - reservedQuote),
       spreadPct:
         ((Number(ticker.ask1Price) - Number(ticker.bid1Price)) / price) * 100,
     });
+    rejection.push(
+      ...exposureVeto({
+        limits: portfolio.limits,
+        total: portfolio.exposure + portfolio.reserved,
+        connection: (connectionExposure?.exposure ?? 0) + reservedQuote,
+        symbol:
+          (portfolio.symbols[row.symbol]?.exposure ?? 0) +
+          (portfolio.symbols[row.symbol]?.pending ?? 0),
+        pending: portfolio.reserved,
+        openPositions: portfolio.openPositions,
+        newNotional: proposedNotional,
+        alreadyPositioned: positionQty.gt(0),
+        unknownPending: portfolio.unknownPending,
+      }),
+    );
     // Entries are conservatively locked after any realized loss until operator review.
     if (Number(p.realized_pnl) - Number(p.fees) < 0)
       rejection.push("REALIZED_LOSS_REVIEW_REQUIRED");
@@ -397,7 +484,7 @@ async function tick(tid: string, botId: string) {
             tid,
             botId,
             mode,
-            buildMarketInput(candles, news),
+            buildMarketInput(candles, news, Date.now(), row.symbol),
             signal.direction,
             strategyAllowed,
             configuredProvider(),
@@ -430,7 +517,11 @@ async function tick(tid: string, botId: string) {
         botId,
         stop ? now : last.time,
         row.strategy_version,
-        JSON.stringify(signal),
+        JSON.stringify({
+          ...signal,
+          symbol: row.symbol,
+          protection: protectionState,
+        }),
         JSON.stringify({
           approved: exit || buy,
           reasons: exit ? [] : entryApproval.reasons,
@@ -453,33 +544,58 @@ async function tick(tid: string, botId: string) {
       process.env.TRADING_EXECUTION_ENABLED !== "true"
     )
       return;
-    const instrument = (await adapter.getInstrument("BTCUSDT")).list[0],
+    const instrument = (await adapter.getInstrument(row.symbol)).list[0],
       side = exit ? "Sell" : "Buy",
       qty = quantize(
         exit
           ? positionQty.toString()
-          : new Decimal(config.maxTrade)
+          : new Decimal(proposedNotional)
               .mul(analysis.gate.modifier)
-              .div(price)
+              .div(new Decimal(ticker.ask1Price).mul(1.01))
               .toString(),
         instrument.lotSizeFilter.basePrecision,
       );
-    if (
-      new Decimal(qty).lte(0) ||
-      new Decimal(qty).mul(price).lt(instrument.lotSizeFilter.minOrderAmt)
-    )
+    const instrumentReasons = instrumentVeto(
+      qty,
+      price,
+      instrument.lotSizeFilter,
+    );
+    if (instrumentReasons.length) {
+      await db.query(
+        "UPDATE signals SET decision=decision||$1::jsonb WHERE id=$2 AND tenant_id=$3",
+        [
+          JSON.stringify({ approved: false, reasons: instrumentReasons }),
+          signalId,
+          tid,
+        ],
+      );
       return;
+    }
     const orderId = randomUUID(),
       clientId = orderId;
     await db.query(
-      "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-      [orderId, tid, botId, signalId, clientId, side, qty, "SUBMITTING"],
+      "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state,symbol,requested_notional) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+      [
+        orderId,
+        tid,
+        botId,
+        signalId,
+        clientId,
+        side,
+        qty,
+        "SUBMITTING",
+        row.symbol,
+        exit
+          ? new Decimal(qty).mul(price).toFixed()
+          : new Decimal(proposedNotional).mul(analysis.gate.modifier).toFixed(),
+      ],
     );
     // Persist intent before network I/O. Pending intents prevent another worker from submitting.
     // Reacquire locks and re-read status before submission.
     await db.query("COMMIT");
     await db.query("BEGIN");
     await db.query("SELECT set_config('app.tenant_id',$1,true)", [tid]);
+    await lockPortfolio(db, tid);
     await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
       botId,
     ]);
@@ -492,7 +608,7 @@ async function tick(tid: string, botId: string) {
     if (
       current.status !== "RUNNING" ||
       current.connection_status !== "CONNECTED" ||
-      Date.now() - market.lastMessage > 45000 ||
+      Date.now() - (market.get(row.symbol) ?? 0) > 45000 ||
       (!exit && !aiGate(mode, signal.direction, analysis.outcome).allowed) ||
       (
         await db.query(
@@ -508,7 +624,7 @@ async function tick(tid: string, botId: string) {
     }
     try {
       const result = await adapter.placeOrder({
-        symbol: "BTCUSDT",
+        symbol: row.symbol,
         side,
         qty,
         orderLinkId: clientId,

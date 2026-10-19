@@ -8,6 +8,19 @@ import { resolve, dirname } from "node:path";
 import { z, ZodError } from "zod";
 import { pool, tenant, audit } from "./db.ts";
 import { registerIntelligenceRoutes } from "./intelligence-routes.ts";
+import { registerAdvancedRoutes } from "./advanced-routes.ts";
+import {
+  symbolSchema,
+  strategySchema,
+  advancedConfig,
+  configurationVeto,
+  previewOnly,
+} from "../../../packages/trading/src/index.ts";
+import {
+  lockPortfolio,
+  portfolioSnapshot,
+  allocationReasons,
+} from "./portfolio.ts";
 import { AIError } from "../../../packages/ai-core/src/index.ts";
 import {
   botConfig,
@@ -403,13 +416,14 @@ app.delete("/api/connections/:id", async (req, reply) => {
   const id = z.uuid().parse((req.params as any).id),
     tid = req.identity!.tenantId;
   return tenant(tid, async (db) => {
+    await lockPortfolio(db, tid);
     const r = await db.query(
       "SELECT id FROM exchange_connections WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
       [id, tid],
     );
     if (!r.rowCount) return reply.code(404).send({ error: "NOT_FOUND" });
     await db.query(
-      "UPDATE bots SET status='STOPPED' WHERE connection_id=$1 AND tenant_id=$2",
+      "UPDATE bots SET status='STOPPED' WHERE connection_id=$1 AND tenant_id=$2 AND status<>'ARCHIVED'",
       [id, tid],
     );
     await db.query(
@@ -434,15 +448,31 @@ app.get("/api/bots", async (req) =>
 );
 app.post("/api/bots", async (req, reply) => {
   const v = z
-      .object({
+      .strictObject({
         name: z.string().min(1).max(80),
         connectionId: z.uuid(),
         config: botConfig,
+        symbol: symbolSchema.default("BTCUSDT"),
+        strategyVersion: strategySchema.default("trend-v1.0"),
+        advancedConfig: advancedConfig.default(() => advancedConfig.parse({})),
       })
       .parse(req.body),
     tid = req.identity!.tenantId,
     id = randomUUID();
   return tenant(tid, async (db) => {
+    await lockPortfolio(db, tid);
+    const invalid = configurationVeto(v.strategyVersion, v.advancedConfig);
+    if (invalid) return reply.code(400).send({ error: invalid });
+    const reasons = allocationReasons(
+      await portfolioSnapshot(db, tid),
+      v.config.capital,
+      v.connectionId,
+      v.symbol,
+    );
+    if (reasons.length)
+      return reply
+        .code(409)
+        .send({ error: "PORTFOLIO_ALLOCATION_REJECTED", reasons });
     const c = await db.query(
       "SELECT id FROM exchange_connections WHERE id=$1 AND tenant_id=$2 AND status='CONNECTED' AND environment='TESTNET'",
       [v.connectionId, tid],
@@ -452,8 +482,17 @@ app.post("/api/bots", async (req, reply) => {
         .code(400)
         .send({ error: "CONNECTED_TESTNET_EXCHANGE_REQUIRED" });
     await db.query(
-      "INSERT INTO bots(id,tenant_id,connection_id,name,config) VALUES($1,$2,$3,$4,$5)",
-      [id, tid, v.connectionId, v.name, JSON.stringify(v.config)],
+      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+      [
+        id,
+        tid,
+        v.connectionId,
+        v.name,
+        JSON.stringify(v.config),
+        v.symbol,
+        v.strategyVersion,
+        JSON.stringify(v.advancedConfig),
+      ],
     );
     await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [
       id,
@@ -469,13 +508,26 @@ app.post("/api/bots/:id/:action", async (req, reply) => {
       .parse(req.params),
     tid = req.identity!.tenantId;
   return tenant(tid, async (db) => {
+    await lockPortfolio(db, tid);
     const b = await db.query(
       "SELECT b.*,c.status AS connection_status FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b",
       [p.id, tid],
     );
     if (!b.rowCount) return reply.code(404).send({ error: "NOT_FOUND" });
+    if (b.rows[0].status === "ARCHIVED")
+      return reply.code(409).send({ error: "BOT_ARCHIVED" });
     if (p.action === "start" && b.rows[0].connection_status !== "CONNECTED")
       return reply.code(409).send({ error: "EXCHANGE_NOT_CONNECTED" });
+    if (
+      p.action === "start" &&
+      previewOnly(
+        b.rows[0].strategy_version,
+        advancedConfig.parse(b.rows[0].advanced_config),
+      )
+    )
+      return reply
+        .code(409)
+        .send({ error: "STRATEGY_OR_LIMIT_ENTRY_IS_PREVIEW_ONLY" });
     const status = { start: "STARTING", pause: "PAUSED", stop: "STOPPED" }[
       p.action
     ];
@@ -490,9 +542,11 @@ app.post("/api/bots/:id/:action", async (req, reply) => {
 });
 app.post("/api/stop-all", async (req) =>
   tenant(req.identity!.tenantId, async (db) => {
-    await db.query("UPDATE bots SET status='STOPPED' WHERE tenant_id=$1", [
-      req.identity!.tenantId,
-    ]);
+    await lockPortfolio(db, req.identity!.tenantId);
+    await db.query(
+      "UPDATE bots SET status='STOPPED' WHERE tenant_id=$1 AND status<>'ARCHIVED'",
+      [req.identity!.tenantId],
+    );
     await audit(db, req.identity!.tenantId, "ALL_BOTS_STOPPED");
     return { ok: true };
   }),
@@ -511,6 +565,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
     ),
   );
 registerIntelligenceRoutes(app);
+registerAdvancedRoutes(app);
 const web = resolve(import.meta.dirname, "../../web/dist");
 if (await stat(web).catch(() => null)) {
   const files = new Set(await readdir(resolve(web, "assets")));

@@ -96,11 +96,15 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
           return reply
             .code(409)
             .send({ error: "ENABLE_ADVISORY_OR_FILTER_MODE" });
-        const candles = await new BybitAdapter("TESTNET").getCandles("BTCUSDT");
-        const snapshot = buildMarketInput(candles);
+        const candles = await new BybitAdapter("TESTNET").getCandles(
+          bot.symbol,
+        );
+        const snapshot = buildMarketInput(candles, [], Date.now(), bot.symbol);
         const input = buildMarketInput(
           candles,
           await recentNews(db, snapshot.candleTime + 900000),
+          Date.now(),
+          bot.symbol,
         );
         const result = await analyzeBot(
           db,
