@@ -15,7 +15,7 @@
 2. Portfolio reservations, instrument limits, closed-cycle results and observed peak-equity drawdown are implemented. Precise midnight equity/daily realized-unrealized accounting and unsupported fee handling still require production acceptance.
 3. Implement and externally verify exchange-native protective orders. Stop cancels pending entries without flattening; Pause blocks new entries while retaining software exits; stopped inventory has no protective monitoring. These boundaries need real exchange/outage verification.
 4. Durable intents, committed attempted-send markers, lifecycle events, ambiguous-acknowledgement reconciliation and multi-worker fault tests are implemented. Verify those behaviors against actual Testnet restarts, outages and partial fills.
-5. Integrate production email delivery, production configuration/key rotation, security hardening, and live acknowledgement/re-authentication controls. Live connections stay disabled until then.
+5. Production Resend delivery and a Coolify deployment are implemented; verify the actual sender/DNS, backups, configuration/key rotation, security hardening, and live acknowledgement/re-authentication controls. Live connections stay disabled until then.
 6. Verify two independent real Bybit Testnet accounts through the checks below. This requires working external network access and user-supplied Testnet credentials in the app. See [the read-only preflight and evidence runbook](testnet-acceptance.md).
 
 ## External Testnet acceptance checklist (not yet run)

@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { PrivateFeedState } from "./private-state.ts";
 import { paperCycle } from "./paper.ts";
 import {
@@ -859,6 +860,9 @@ export async function startWorker() {
             notificationJob = null;
           });
       }
+      await writeFile("/tmp/trader-worker-heartbeat", String(Date.now()), {
+        mode: 0o600,
+      });
       for (const [id, f] of feeds)
         if (!active.has(id)) {
           f.socket.close();

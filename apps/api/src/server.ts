@@ -1,4 +1,10 @@
 import {
+  deliverAccountLink,
+  validateMailConfiguration,
+  validatePublicOrigin,
+  MailDeliveryError,
+} from "./mail.ts";
+import {
   exchangeAdapter,
   providers,
 } from "../../../packages/exchanges/src/index.ts";
@@ -7,8 +13,8 @@ import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
 import { hash, verify, argon2id } from "argon2";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
-import { mkdir, appendFile, stat, readFile, readdir } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { stat, readFile, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { z, ZodError } from "zod";
 import { pool, tenant, audit } from "./db.ts";
 import { registerIntelligenceRoutes } from "./intelligence-routes.ts";
@@ -42,14 +48,12 @@ const credentials = z.object({
   password: z.string().min(12).max(128),
 });
 const production = process.env.NODE_ENV === "production";
-const origin = process.env.APP_ORIGIN ?? "http://localhost:3000";
+const origin = validatePublicOrigin();
+validateMailConfiguration();
 if (!process.env.APP_ENCRYPTION_KEY?.match(/^[a-f0-9]{64}$/i))
   throw Error("APP_ENCRYPTION_KEY must be a 32-byte hex key");
-if (production)
-  throw Error(
-    "Production requires a configured transactional email transport; this build supports development mail only",
-  );
 export const app = Fastify({
+  trustProxy: production ? (_address: string, hop: number) => hop === 0 : false,
   logger: {
     redact: [
       "req.headers.cookie",
@@ -147,6 +151,8 @@ app.addHook("onRequest", async (req, reply) => {
     return reply.code(403).send({ error: "EMAIL_VERIFICATION_REQUIRED" });
 });
 app.setErrorHandler((err, req, reply) => {
+  if (err instanceof MailDeliveryError)
+    return reply.code(503).send({ error: "EMAIL_DELIVERY_UNAVAILABLE" });
   if (err instanceof AIError) return reply.code(503).send({ error: err.code });
   if (err instanceof ZodError)
     return reply.code(400).send({
@@ -174,23 +180,24 @@ app.setErrorHandler((err, req, reply) => {
   );
   return reply.code(500).send({ error: "INTERNAL_ERROR" });
 });
-async function sendLink(userId: string, email: string, kind: string) {
+async function sendLink(
+  userId: string,
+  email: string,
+  kind: "verify" | "reset",
+) {
   const token = secret();
   await pool.query(
     "INSERT INTO auth_tokens(token_hash,user_id,kind,expires_at) VALUES($1,$2,$3,now()+interval '30 minutes')",
     [digest(token), userId, kind],
   );
-  const outbox =
-    process.env.NODE_ENV === "test" && process.env.TEST_MAIL_OUTBOX_PATH
-      ? process.env.TEST_MAIL_OUTBOX_PATH
-      : resolve(import.meta.dirname, "../../../.local/mail.jsonl");
-  await mkdir(dirname(outbox), { recursive: true, mode: 0o700 });
-  await appendFile(
-    outbox,
-    JSON.stringify({ to: email, kind, url: `${origin}/?${kind}=${token}` }) +
-      "\n",
-    { mode: 0o600 },
-  );
+  try {
+    await deliverAccountLink(email, kind, `${origin}/?${kind}=${token}`);
+  } catch (e) {
+    await pool.query("DELETE FROM auth_tokens WHERE token_hash=$1", [
+      digest(token),
+    ]);
+    throw e;
+  }
 }
 app.get("/api/health", async () => {
   await pool.query("SELECT 1");
@@ -300,7 +307,17 @@ app.post(
         .object({ email: z.email().transform((v) => v.toLowerCase()) })
         .parse(req.body),
       r = await pool.query("SELECT id FROM users WHERE email=$1", [email]);
-    if (r.rows[0]) await sendLink(r.rows[0].id, email, "reset");
+    if (r.rows[0]) {
+      try {
+        await sendLink(r.rows[0].id, email, "reset");
+      } catch (e) {
+        if (!(e instanceof MailDeliveryError)) throw e;
+        req.log.warn(
+          { event: "RESET_EMAIL_DELIVERY_UNAVAILABLE" },
+          "Password reset delivery unavailable",
+        );
+      }
+    }
     return { message: "If the account exists, a reset link has been sent." };
   },
 );
@@ -693,3 +710,23 @@ if (process.env.NODE_ENV !== "test") {
 }
 if (process.env.NODE_ENV !== "test")
   await app.listen({ port: Number(process.env.PORT ?? 3000), host: "0.0.0.0" });
+
+if (process.env.NODE_ENV !== "test") {
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    await app.close();
+    await pool.end();
+  };
+  process.once("SIGTERM", () => {
+    void stop().catch(() => {
+      process.exitCode = 1;
+    });
+  });
+  process.once("SIGINT", () => {
+    void stop().catch(() => {
+      process.exitCode = 1;
+    });
+  });
+}

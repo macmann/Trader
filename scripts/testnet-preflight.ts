@@ -171,7 +171,10 @@ export async function runPreflight() {
       connections,
       ...assessment,
     };
-    const directory = resolve(import.meta.dirname, "../.local");
+    const directory =
+      process.env.NODE_ENV === "production"
+        ? "/tmp"
+        : resolve(import.meta.dirname, "../.local");
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await writeFile(
       resolve(directory, "testnet-preflight.json"),
