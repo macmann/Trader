@@ -1,0 +1,12 @@
+{
+  "name": "@trader/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file=../../.env src/index.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "@types/ws": "^8.18.0"
+  }
+}

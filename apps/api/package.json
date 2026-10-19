@@ -1,0 +1,14 @@
+{
+  "name": "@trader/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file=../../.env src/server.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.6.0",
+    "@fastify/cookie": "^11.0.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "argon2": "^0.44.0"
+  }
+}
