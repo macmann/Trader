@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx --env-file=../../.env src/index.ts"
+    "dev": "node --use-env-proxy --import tsx --env-file=../../.env src/index.ts"
   },
   "dependencies": {
     "ws": "^8.18.0",

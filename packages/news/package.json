@@ -1,0 +1,9 @@
+{
+  "name": "@trader/news",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "fast-xml-parser": "^5.0.0"
+  }
+}

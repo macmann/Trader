@@ -4,9 +4,11 @@ import rateLimit from "@fastify/rate-limit";
 import { hash, verify, argon2id } from "argon2";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { mkdir, appendFile, stat, readFile, readdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { z, ZodError } from "zod";
 import { pool, tenant, audit } from "./db.ts";
+import { registerIntelligenceRoutes } from "./intelligence-routes.ts";
+import { AIError } from "../../../packages/ai-core/src/index.ts";
 import {
   botConfig,
   encrypt,
@@ -110,6 +112,7 @@ app.addHook("onRequest", async (req, reply) => {
     return reply.code(403).send({ error: "EMAIL_VERIFICATION_REQUIRED" });
 });
 app.setErrorHandler((err, req, reply) => {
+  if (err instanceof AIError) return reply.code(503).send({ error: err.code });
   if (err instanceof ZodError)
     return reply.code(400).send({
       error: "VALIDATION_ERROR",
@@ -134,12 +137,13 @@ async function sendLink(userId: string, email: string, kind: string) {
     "INSERT INTO auth_tokens(token_hash,user_id,kind,expires_at) VALUES($1,$2,$3,now()+interval '30 minutes')",
     [digest(token), userId, kind],
   );
-  await mkdir(resolve(import.meta.dirname, "../../../.local"), {
-    recursive: true,
-    mode: 0o700,
-  });
+  const outbox =
+    process.env.NODE_ENV === "test" && process.env.TEST_MAIL_OUTBOX_PATH
+      ? process.env.TEST_MAIL_OUTBOX_PATH
+      : resolve(import.meta.dirname, "../../../.local/mail.jsonl");
+  await mkdir(dirname(outbox), { recursive: true, mode: 0o700 });
   await appendFile(
-    resolve(import.meta.dirname, "../../../.local/mail.jsonl"),
+    outbox,
     JSON.stringify({ to: email, kind, url: `${origin}/?${kind}=${token}` }) +
       "\n",
     { mode: 0o600 },
@@ -506,6 +510,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
         ).rows,
     ),
   );
+registerIntelligenceRoutes(app);
 const web = resolve(import.meta.dirname, "../../web/dist");
 if (await stat(web).catch(() => null)) {
   const files = new Set(await readdir(resolve(web, "assets")));
