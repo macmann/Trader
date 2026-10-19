@@ -31,6 +31,7 @@ after(async () => {
       "bots",
       "exchange_connections",
       "audit_logs",
+      "portfolio_limits",
     ])
       await admin.query(`DELETE FROM ${table} WHERE tenant_id=$1`, [tid]);
     await admin.query("DELETE FROM workspaces WHERE id=$1", [tid]);

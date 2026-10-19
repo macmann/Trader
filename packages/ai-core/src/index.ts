@@ -1,3 +1,4 @@
+import { symbolSchema, type Symbol } from "../../trading/src/index.ts";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { ema, type Candle } from "../../core/src/index.ts";
@@ -48,7 +49,7 @@ export const newsAnalysisSchema = z.strictObject({
 });
 export type NewsAnalysis = z.infer<typeof newsAnalysisSchema>;
 export const marketInputSchema = z.strictObject({
-  symbol: z.literal("BTCUSDT"),
+  symbol: symbolSchema,
   candleTime: z.number().int().nonnegative(),
   interval: z.literal("15m"),
   price: z.number().positive(),
@@ -128,6 +129,7 @@ export function buildMarketInput(
   candles: Candle[],
   news: MarketAnalysisInput["news"] = [],
   now = Date.now(),
+  symbol: Symbol = "BTCUSDT",
 ): MarketAnalysisInput {
   const closed = candles.filter((c) => c.time + 900000 <= now);
   if (closed.length < 50) throw new AIError("AI_INPUT_STALE");
@@ -165,7 +167,7 @@ export function buildMarketInput(
   const avgVolume =
     closed.slice(i - 20, i).reduce((sum, c) => sum + c.volume, 0) / 20;
   return marketInputSchema.parse({
-    symbol: "BTCUSDT",
+    symbol,
     candleTime: last.time,
     interval: "15m",
     price: last.close,

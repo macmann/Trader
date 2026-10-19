@@ -652,3 +652,17 @@ label small {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+.bot-selector {
+  max-width: 300px;
+}
+.preview-result {
+  padding: 20px;
+  margin-top: 22px;
+  background: #10202b;
+  border: 1px solid #304b61;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.preview-result p {
+  color: #a8bed1;
+}

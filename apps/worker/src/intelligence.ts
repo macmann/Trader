@@ -268,7 +268,7 @@ export async function analyzeBot(
   )
     return { id: null, outcome, gate };
   const inserted = await db.query(
-    "INSERT INTO ai_analyses(id,tenant_id,bot_id,candle_time,input_hash,context_id,mode,provider,model,prompt_version,status,result,error_code,comparison,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(bot_id,candle_time,input_hash,mode) DO NOTHING RETURNING id",
+    "INSERT INTO ai_analyses(id,tenant_id,bot_id,candle_time,input_hash,context_id,mode,provider,model,prompt_version,status,result,error_code,comparison,expires_at,symbol) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(bot_id,candle_time,input_hash,mode) DO NOTHING RETURNING id",
     [
       id,
       tenantId,
@@ -294,6 +294,7 @@ export async function analyzeBot(
         note: "Counterfactual signal decisions, not simulated or realized investment returns.",
       }),
       new Date(outcome.expiresAt),
+      input.symbol,
     ],
   );
   if (!inserted.rowCount) {
@@ -431,29 +432,35 @@ export async function warmAIContext(
 ) {
   if (!provider) return;
   const workspaces = (await pool.query("SELECT id FROM workspaces")).rows;
-  let enabled = false;
+  const activeSymbols = new Set<
+    import("../../../packages/trading/src/index.ts").Symbol
+  >();
   for (const workspace of workspaces) {
-    enabled = await tenant(
+    for (const row of await tenant(
       workspace.id,
       async (db) =>
-        !!(
+        (
           await db.query(
-            "SELECT 1 FROM bots WHERE tenant_id=$1 AND ai_mode<>'OFF' AND status IN ('RUNNING','STARTING') LIMIT 1",
+            "SELECT DISTINCT symbol FROM bots WHERE tenant_id=$1 AND ai_mode<>'OFF' AND status IN ('RUNNING','STARTING')",
             [workspace.id],
           )
-        ).rowCount,
+        ).rows,
+    ))
+      activeSymbols.add(row.symbol);
+  }
+  for (const symbol of activeSymbols) {
+    const candles = await new BybitAdapter("TESTNET").getCandles(symbol);
+    const snapshot = buildMarketInput(candles, [], Date.now(), symbol);
+    const db = await intelligencePool.connect();
+    let news;
+    try {
+      news = await recentNews(db, snapshot.candleTime + 900000);
+    } finally {
+      db.release();
+    }
+    await marketContext(
+      buildMarketInput(candles, news, Date.now(), symbol),
+      provider,
     );
-    if (enabled) break;
   }
-  if (!enabled) return;
-  const candles = await new BybitAdapter("TESTNET").getCandles("BTCUSDT");
-  const snapshot = buildMarketInput(candles);
-  const db = await intelligencePool.connect();
-  let news;
-  try {
-    news = await recentNews(db, snapshot.candleTime + 900000);
-  } finally {
-    db.release();
-  }
-  await marketContext(buildMarketInput(candles, news), provider);
 }

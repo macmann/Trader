@@ -120,7 +120,20 @@ export function risk(input: {
   consecutiveLosses: number;
   available: number;
   spreadPct: number;
+  allowScaleIn?: boolean;
 }): string[] {
+  if (
+    ![
+      input.exposure,
+      input.dailyPnl,
+      input.trades,
+      input.drawdownPct,
+      input.consecutiveLosses,
+      input.available,
+      input.spreadPct,
+    ].every(Number.isFinite)
+  )
+    return ["INVALID_RISK_STATE"];
   const r: string[] = [];
   if (input.status !== "RUNNING") r.push("BOT_NOT_RUNNING");
   if (input.environment === "LIVE" && !input.liveEnabled)
@@ -129,7 +142,7 @@ export function risk(input: {
   if (!input.fresh) r.push("STALE_MARKET_DATA");
   if (!input.reconciled) r.push("RECONCILIATION_REQUIRED");
   if (input.globalStop) r.push("GLOBAL_STOP");
-  if (input.exposure > 0) r.push("ALREADY_POSITIONED");
+  if (input.exposure > 0 && !input.allowScaleIn) r.push("ALREADY_POSITIONED");
   if (input.exposure + input.config.maxTrade > input.config.capital)
     r.push("ALLOCATION_EXCEEDED");
   if (input.available < input.config.maxTrade) r.push("INSUFFICIENT_BALANCE");
@@ -281,37 +294,63 @@ export class BybitAdapter {
       }))
       .reverse();
   }
-  getOpenOrders() {
+  getOpenOrders(cursor?: string) {
     return this.request("/v5/order/realtime", {
       category: "spot",
       openOnly: 0,
+      ...(cursor ? { cursor } : {}),
       limit: 50,
     });
   }
-  getOrder(clientId: string) {
-    return this.request("/v5/order/realtime", {
+  async getOrder(clientId: string) {
+    const result = await this.request("/v5/order/realtime", {
       category: "spot",
       orderLinkId: clientId,
     });
+    return result.list?.length
+      ? result
+      : this.request("/v5/order/history", {
+          category: "spot",
+          orderLinkId: clientId,
+        });
   }
-  getExecutions() {
-    return this.request("/v5/execution/list", { category: "spot", limit: 100 });
+  getExecutions(cursor?: string, startTime?: number, endTime?: number) {
+    return this.request("/v5/execution/list", {
+      category: "spot",
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+      ...(startTime !== undefined ? { startTime } : {}),
+      ...(endTime !== undefined ? { endTime } : {}),
+    });
   }
   placeOrder(p: {
     symbol: string;
     side: "Buy" | "Sell";
     qty: string;
     orderLinkId: string;
+    orderType?: "Market" | "Limit";
+    price?: string;
+    timeInForce?: "GTC" | "PostOnly";
   }) {
+    const { orderType = "Market", price, timeInForce, ...common } = p;
+    if (
+      orderType === "Limit" &&
+      (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)
+    )
+      throw Error("LIMIT_PRICE_REQUIRED");
     return this.request(
       "/v5/order/create",
       {
         category: "spot",
-        orderType: "Market",
-        marketUnit: "baseCoin",
-        slippageToleranceType: "Percent",
-        slippageTolerance: "0.3",
-        ...p,
+        ...common,
+        orderType,
+        ...(orderType === "Limit"
+          ? { price, timeInForce: timeInForce ?? "PostOnly" }
+          : {
+              marketUnit: "baseCoin",
+              slippageToleranceType: "Percent",
+              slippageTolerance: "0.3",
+            }),
       },
       "POST",
     );

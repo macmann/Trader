@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { TradingDesk } from "./TradingDesk.tsx";
 import { Intelligence } from "./Intelligence.tsx";
 type Bot = {
   id: string;
@@ -8,6 +9,8 @@ type Bot = {
   status: string;
   environment: string;
   symbol: string;
+  strategy_version: string;
+  advanced_config: any;
   ai_mode?: string;
   config: {
     capital: number;
@@ -34,7 +37,15 @@ async function api(path: string, method = "GET", data?: unknown) {
     body: data ? JSON.stringify(data) : undefined,
   });
   const value = await r.json();
-  if (!r.ok) throw Error(value.error ?? "Request failed");
+  if (!r.ok) {
+    const detail =
+      value.details
+        ?.map((v: any) => `${v.path?.join(".")}: ${v.message}`)
+        .join("; ") ?? value.reasons?.join("; ");
+    throw Error(
+      (value.error ?? "Request failed") + (detail ? ": " + detail : ""),
+    );
+  }
   return value;
 }
 const money = (v: number) =>
@@ -267,6 +278,7 @@ function App() {
             "Overview",
             "Bots",
             "Exchanges",
+            "Portfolio",
             "AI Analysis",
             "News",
             "Orders",
@@ -279,7 +291,9 @@ function App() {
               key={p}
               onClick={() => setPage(p)}
             >
-              <span>{["◫", "◇", "⇄", "✧", "▤", "≡", "⌁", "◷", "⊙"][i]}</span>
+              <span>
+                {["◫", "◇", "⇄", "◉", "✧", "▤", "≡", "⌁", "◷", "⊙"][i]}
+              </span>
               {p}
             </button>
           ))}
@@ -438,7 +452,7 @@ function App() {
                           </div>
                           <h2>{b.name}</h2>
                           <p className="muted">
-                            BTCUSDT · Spot · 15m · Trend v1.0
+                            {b.symbol} · Spot · 15m · {b.strategy_version}
                           </p>
                           <span
                             className={
@@ -463,7 +477,9 @@ function App() {
                               </strong>
                             </div>
                             <div>
-                              <small>BTC position</small>
+                              <small>
+                                {b.symbol.replace(/USDT$/, " ")}position
+                              </small>
                               <strong>
                                 {Number(b.quantity ?? 0).toFixed(6)}
                               </strong>
@@ -508,13 +524,16 @@ function App() {
                       Advisory or Filter in AI Analysis.
                     </p>
                     <small>
-                      Stop and pause prevent new execution. They do not
-                      liquidate existing positions. Software stop-loss checks
-                      require the worker and exchange connection to remain
-                      available.
+                      Stop and pause prevent new execution. They request
+                      cancellation of resting entries and do not liquidate
+                      existing positions. Software stop-loss checks require the
+                      worker and exchange connection to remain available.
                     </small>
                   </section>
                 </>
+              )}
+              {page === "Portfolio" && (
+                <TradingDesk bots={bots} request={api} refreshBots={refresh} />
               )}
               {["AI Analysis", "News"].includes(page) && (
                 <Intelligence
@@ -728,6 +747,8 @@ function App() {
                   await api("/bots", "POST", {
                     name: f.get("name"),
                     connectionId: f.get("connectionId"),
+                    symbol: f.get("symbol"),
+                    strategyVersion: f.get("strategyVersion"),
                     config: Object.fromEntries(
                       [
                         "capital",
@@ -765,6 +786,24 @@ function App() {
                   </select>
                 </label>
                 <div className="form-grid">
+                  <label>
+                    Spot pair
+                    <select name="symbol">
+                      <option>BTCUSDT</option>
+                      <option>ETHUSDT</option>
+                      <option>SOLUSDT</option>
+                    </select>
+                  </label>
+                  <label>
+                    Strategy
+                    <select name="strategyVersion">
+                      <option value="trend-v1.0">Trend v1.0</option>
+                      <option value="breakout-v1.0">Breakout v1.0</option>
+                      <option value="dca-v1.0">Bounded DCA v1.0</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="form-grid">
                   {[
                     ["capital", "Capital allocation ($)", 100],
                     ["maxTrade", "Maximum trade ($)", 20],
@@ -786,7 +825,8 @@ function App() {
                   ))}
                 </div>
                 <p className="muted">
-                  BTCUSDT · Spot · 15 minutes · Trend v1.0 · AI off
+                  Selected pair · Spot · 15 minutes · Versioned strategy · AI
+                  off
                   <br />
                   10 trades/day · 10% drawdown limit · One open position
                 </p>

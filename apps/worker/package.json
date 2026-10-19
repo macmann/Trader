@@ -6,7 +6,8 @@
     "dev": "node --use-env-proxy --import tsx --env-file=../../.env src/index.ts"
   },
   "dependencies": {
-    "ws": "^8.18.0",
-    "@types/ws": "^8.18.0"
+    "@types/ws": "^8.18.0",
+    "https-proxy-agent": "^7.0.6",
+    "ws": "^8.18.0"
   }
 }

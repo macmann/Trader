@@ -101,3 +101,13 @@ test("Bybit refuses dangerous API permissions and separates environments", async
   assert.equal(adapter.base, "https://api-testnet.bybit.com");
   assert.equal(new BybitAdapter("LIVE").base, "https://api.bybit.com");
 });
+
+test("non-finite risk state never bypasses exposure, balance or loss checks", () => {
+  for (const patch of [
+    { available: NaN },
+    { dailyPnl: Infinity },
+    { exposure: NaN },
+    { spreadPct: NaN },
+  ])
+    assert.deepEqual(risk({ ...baseline, ...patch }), ["INVALID_RISK_STATE"]);
+});
