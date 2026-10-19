@@ -524,10 +524,10 @@ function App() {
                       Advisory or Filter in AI Analysis.
                     </p>
                     <small>
-                      Stop and pause prevent new execution. They do not
-                      liquidate existing positions. Software stop-loss checks
-                      require the worker and exchange connection to remain
-                      available.
+                      Stop and pause prevent new execution. They request
+                      cancellation of resting entries and do not liquidate
+                      existing positions. Software stop-loss checks require the
+                      worker and exchange connection to remain available.
                     </small>
                   </section>
                 </>
@@ -799,7 +799,7 @@ function App() {
                     <select name="strategyVersion">
                       <option value="trend-v1.0">Trend v1.0</option>
                       <option value="breakout-v1.0">Breakout v1.0</option>
-                      <option value="dca-v1.0">DCA v1.0 · preview only</option>
+                      <option value="dca-v1.0">Bounded DCA v1.0</option>
                     </select>
                   </label>
                 </div>

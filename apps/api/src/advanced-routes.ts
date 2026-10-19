@@ -24,7 +24,8 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
     marketTypes: ["SPOT"],
     timeframes: ["15m"],
     derivativesSupported: false,
-    advancedExecutionEnabled: false,
+    advancedExecutionSupported: true,
+    executionEnabled: process.env.TRADING_EXECUTION_ENABLED === "true",
   }));
   app.get("/api/portfolio", async (req) =>
     tenant(req.identity!.tenantId, (db) =>
@@ -136,6 +137,10 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           tid,
         ],
       );
+      await db.query(
+        "UPDATE positions SET peak_equity=GREATEST(0,$1::numeric+realized_pnl-fees) WHERE bot_id=$2 AND tenant_id=$3",
+        [config.capital, id, tid],
+      );
       await audit(db, tid, "BOT_CONFIG_CHANGED", {
         botId: id,
         symbol,
@@ -181,7 +186,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
     return tenant(tid, async (db) => {
       const b = (
         await db.query(
-          "SELECT b.*,p.quantity,p.cost,p.high_watermark,p.last_entry_price,p.last_entry_at,p.entry_count,p.grid_levels_filled FROM bots b JOIN positions p ON p.bot_id=b.id AND p.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
+          "SELECT b.*,p.quantity,p.cost,p.high_watermark,p.last_entry_price,p.last_entry_at,p.entry_count,p.grid_levels_filled,p.last_exit_price FROM bots b JOIN positions p ON p.bot_id=b.id AND p.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
           [id, tid],
         )
       ).rows[0];
@@ -207,6 +212,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
             lastEntryAt: b.last_entry_at?.getTime() ?? 0,
             entryCount: b.entry_count,
             gridLevelsFilled: b.grid_levels_filled,
+            lastExitPrice: Number(b.last_exit_price),
           },
           candles: v.candles,
           limits: snapshot.limits,

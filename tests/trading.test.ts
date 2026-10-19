@@ -8,7 +8,6 @@ import {
   evaluateStrategy,
   exposureVeto,
   planPreview,
-  previewOnly,
   configurationVeto,
   symbolSchema,
   instrumentVeto,
@@ -295,11 +294,6 @@ test("limit/DCA preview rounds quantities down and never claims executable order
   assert.equal(result.proposal?.quantity, "0.202");
   assert.ok(result.proposal!.notional <= 20);
   assert.equal(result.risk.approved, true);
-  assert.equal(previewOnly("dca-v1.0", advancedConfig.parse({})), true);
-  assert.equal(
-    previewOnly("trend-v1.0", advancedConfig.parse({ entryType: "LIMIT" })),
-    true,
-  );
 });
 test("DCA preview cannot exceed bot capital even with spare exchange funds", () => {
   const result = planPreview({

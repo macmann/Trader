@@ -20,6 +20,8 @@ after(async () => {
     ).rows[0]?.id;
     if (tid) {
       for (const table of [
+        "trade_cycles",
+        "order_events",
         "executions",
         "orders",
         "signals",
@@ -463,8 +465,20 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
         payload: {},
       })
     ).statusCode,
-    409,
+    200,
   );
+  await app.inject({
+    method: "POST",
+    url: `/api/bots/${secondId}/stop`,
+    headers: a.headers,
+    payload: {},
+  });
+  await app.inject({
+    method: "POST",
+    url: `/api/bots/${secondId}/stop`,
+    headers: a.headers,
+    payload: {},
+  });
   const hypothetical = await app.inject({
     method: "POST",
     url: `/api/bots/${secondId}/preview`,
@@ -515,8 +529,14 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
         payload: {},
       })
     ).statusCode,
-    409,
+    200,
   );
+  await app.inject({
+    method: "POST",
+    url: `/api/bots/${secondId}/stop`,
+    headers: a.headers,
+    payload: {},
+  });
   assert.equal(
     (
       await app.inject({

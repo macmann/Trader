@@ -1,3 +1,10 @@
+import { reconcile, orderEvent, terminal } from "./ledger.ts";
+export { reconcile } from "./ledger.ts";
+import {
+  dispatchIntent,
+  managePending,
+  type ExecutionRuntime,
+} from "./execution.ts";
 import {
   symbols,
   advancedConfig,
@@ -5,7 +12,6 @@ import {
   entryNotional,
   protection,
   exposureVeto,
-  previewOnly,
   instrumentVeto,
 } from "../../../packages/trading/src/index.ts";
 import { lockPortfolio, portfolioSnapshot } from "../../api/src/portfolio.ts";
@@ -34,7 +40,6 @@ import {
   BybitAdapter,
   botConfig,
   decrypt,
-  evaluate,
   risk,
   quantize,
   type Credentials,
@@ -139,512 +144,513 @@ function privateFeed(id: string, credentials: Credentials) {
   });
   return current;
 }
-// No blind retry of createOrder. Uncertain submissions remain locked until reconciled.
-export async function reconcile(
-  db: pg.PoolClient,
+export async function tick(
   tid: string,
-  connectionId: string,
-  adapter: BybitAdapter,
+  botId: string,
+  override?: {
+    adapter: BybitAdapter;
+    privateReady: boolean;
+    marketReceivedAt: number;
+    executionEnabled: boolean;
+    now?: () => number;
+    afterIntent?: () => Promise<void>;
+    afterSubmitting?: () => Promise<void>;
+  },
 ) {
-  const [open, executions] = await Promise.all([
-    adapter.getOpenOrders(),
-    adapter.getExecutions(),
-  ]);
-  const ours = await db.query(
-    "SELECT o.* FROM orders o JOIN bots b ON b.id=o.bot_id WHERE b.connection_id=$1 AND o.tenant_id=$2",
-    [connectionId, tid],
-  );
-  const byClient = new Map(ours.rows.map((o) => [o.client_id, o]));
-  if (open.nextPageCursor || executions.nextPageCursor)
-    throw Error("PAGINATED_HISTORY_REQUIRES_REVIEW");
-  for (const o of open.list ?? [])
-    if (!byClient.has(o.orderLinkId)) throw Error("UNEXPECTED_EXCHANGE_ORDER");
-  for (const fill of [...(executions.list ?? [])].reverse()) {
-    const order = byClient.get(fill.orderLinkId);
-    if (!order) continue;
-    if (fill.feeCurrency && fill.feeCurrency !== "USDT")
-      throw Error("NON_QUOTE_FEE_REQUIRES_RECONCILIATION");
-    const inserted = await db.query(
-      "INSERT INTO executions(id,tenant_id,order_id,quantity,price,fee,executed_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id",
-      [
-        fill.execId,
-        tid,
-        order.id,
-        fill.execQty,
-        fill.execPrice,
-        fill.execFee,
-        new Date(Number(fill.execTime)),
-      ],
-    );
-    if (!inserted.rowCount) continue;
-    const p = (
-      await db.query(
-        "SELECT * FROM positions WHERE bot_id=$1 AND tenant_id=$2 FOR UPDATE",
-        [order.bot_id, tid],
-      )
-    ).rows[0];
-    const qty = new Decimal(p.quantity),
-      cost = new Decimal(p.cost),
-      q = new Decimal(fill.execQty),
-      price = new Decimal(fill.execPrice),
-      fee = new Decimal(fill.execFee);
-    if (order.side === "Buy") {
-      await db.query(
-        "UPDATE positions SET quantity=$1,cost=$2,fees=fees+$3,high_watermark=GREATEST(high_watermark,$6),last_entry_price=$6,last_entry_at=$8,entry_count=entry_count+CASE WHEN (SELECT count(*) FROM executions WHERE order_id=$7)=1 THEN 1 ELSE 0 END,updated_at=now() WHERE bot_id=$4 AND tenant_id=$5",
-        [
-          qty.plus(q).toString(),
-          cost.plus(q.mul(price)).toString(),
-          fee.toString(),
-          order.bot_id,
-          tid,
-          price.toString(),
-          order.id,
-          new Date(Number(fill.execTime)),
-        ],
-      );
-    } else {
-      if (q.gt(qty)) throw Error("SELL_EXCEEDS_TRACKED_POSITION");
-      const basis = qty.isZero() ? new Decimal(0) : cost.div(qty).mul(q);
-      await db.query(
-        "UPDATE positions SET quantity=$1,cost=$2,realized_pnl=realized_pnl+$3,fees=fees+$4,high_watermark=CASE WHEN $1::numeric=0 THEN 0 ELSE high_watermark END,entry_count=CASE WHEN $1::numeric=0 THEN 0 ELSE entry_count END,updated_at=now() WHERE bot_id=$5 AND tenant_id=$6",
-        [
-          qty.minus(q).toString(),
-          cost.minus(basis).toString(),
-          q.mul(price).minus(basis).toString(),
-          fee.toString(),
-          order.bot_id,
-          tid,
-        ],
-      );
-    }
-  }
-  for (const order of ours.rows.filter(
-    (o) =>
-      !["Filled", "Cancelled", "Rejected", "Deactivated"].includes(o.state),
-  )) {
-    const response = await adapter.getOrder(order.client_id);
-    const remote = response.list?.[0];
-    if (!remote) {
-      if (order.state === "INTERNAL_CREATED") continue;
-      throw Error("ORDER_OUTCOME_UNKNOWN");
-    }
-    await db.query(
-      "UPDATE orders SET state=$1,exchange_id=$2,updated_at=now() WHERE id=$3 AND tenant_id=$4",
-      [remote.orderStatus, remote.orderId, order.id, tid],
-    );
-  }
-}
-async function tick(tid: string, botId: string) {
-  await tenant(tid, async (db) => {
-    await lockPortfolio(db, tid);
-    if (
-      !(
-        await db.query(
-          "SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS locked",
-          [botId],
-        )
-      ).rows[0].locked
-    )
-      return;
-    const row = (
-      await db.query(
-        "SELECT b.*,c.environment,c.credentials,c.status AS connection_status FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b,c",
-        [botId, tid],
-      )
-    ).rows[0];
-    if (
-      !row ||
-      !["STARTING", "RUNNING", "PAUSED", "STOPPED"].includes(row.status) ||
-      row.environment !== "TESTNET" ||
-      row.connection_status !== "CONNECTED"
-    )
-      return;
-    const credentials = decrypt<Credentials>(
-        row.credentials,
-        key,
-        `${tid}:${row.connection_id}:${row.environment}`,
-      ),
-      adapter = new BybitAdapter("TESTNET", credentials),
-      feed = privateFeed(row.connection_id, credentials);
-    const hasOrders = (
-      await db.query(
-        "SELECT 1 FROM orders WHERE bot_id=$1 AND tenant_id=$2 LIMIT 1",
-        [botId, tid],
-      )
-    ).rowCount;
-    if (!["STARTING", "RUNNING"].includes(row.status) && !hasOrders) return;
-    if (!feed.authenticated || Date.now() - feed.lastMessage > 45000) return;
-    await reconcile(db, tid, row.connection_id, adapter);
-    if (!["STARTING", "RUNNING"].includes(row.status)) return;
-    const p = (
-      await db.query(
-        "SELECT * FROM positions WHERE bot_id=$1 AND tenant_id=$2",
-        [botId, tid],
-      )
-    ).rows[0];
-    const pending = (
-      await db.query(
-        "SELECT 1 FROM orders WHERE bot_id=$1 AND tenant_id=$2 AND state NOT IN ('Filled','Cancelled','Rejected','Deactivated')",
-        [botId, tid],
-      )
-    ).rowCount;
-    if (pending) return;
-    if (row.status === "STARTING") {
-      await db.query(
-        "UPDATE bots SET status='RUNNING' WHERE id=$1 AND tenant_id=$2",
-        [botId, tid],
-      );
-      await audit(db, tid, "BOT_RECONCILED", { botId });
-      row.status = "RUNNING";
-    }
-    const advanced = advancedConfig.parse(row.advanced_config);
-    if (previewOnly(row.strategy_version, advanced)) return;
-    const config = botConfig.parse(row.config),
-      ticker = (await adapter.getTicker(row.symbol)).list[0],
-      price = Number(ticker.lastPrice),
-      now = Date.now();
-    if (
-      !Number.isFinite(price) ||
-      price <= 0 ||
-      now - (market.get(row.symbol) ?? 0) > 45000
-    )
-      return;
-    const candles = (await adapter.getCandles(row.symbol)).filter(
-        (c) => c.time + 900000 <= now,
-      ),
-      last = candles.at(-1);
-    if (!last) return;
-    const positionQty = new Decimal(p.quantity),
-      entry = positionQty.gt(0)
-        ? new Decimal(p.cost).div(positionQty).toNumber()
-        : 0;
-    const protectionState = protection({
-      price,
-      position: {
-        quantity: Number(p.quantity),
-        cost: Number(p.cost),
-        highWatermark: Number(p.high_watermark),
-        lastEntryPrice: Number(p.last_entry_price),
-        lastEntryAt: p.last_entry_at?.getTime() ?? 0,
-        entryCount: p.entry_count,
-        gridLevelsFilled: p.grid_levels_filled,
-      },
-      stopLossPct: config.stopLossPct,
-      takeProfitPct: config.takeProfitPct,
-      advanced,
-    });
-    await db.query(
-      "UPDATE positions SET high_watermark=$1 WHERE bot_id=$2 AND tenant_id=$3",
-      [protectionState.highWatermark, botId, tid],
-    );
-    const stop = protectionState.exit;
-    const mode = (row.ai_mode ?? "OFF") as AIMode;
-    const news = mode === "OFF" ? [] : await recentNews(db, last.time + 900000);
-    const newsRevision = contextKey(
-      { id: "news", model: "high-impact" },
-      news.filter((n) => (n.impact ?? 0) >= 0.8),
-    );
-    if (!stop && String(row.last_candle) === String(last.time)) {
-      if (mode !== "OFF" && row.last_ai_news !== newsRevision) {
-        const refreshed = await analyzeBot(
-          db,
-          tid,
-          botId,
-          mode,
-          buildMarketInput(candles, news, Date.now(), row.symbol),
-          "NONE",
-          false,
-          configuredProvider(),
-          true,
-        );
-        if (refreshed.outcome?.error === "AI_BUSY") return;
-        await db.query(
-          "UPDATE bots SET last_ai_news=$1 WHERE id=$2 AND tenant_id=$3",
-          [newsRevision, botId, tid],
-        );
-      }
-      return;
-    }
-    const signal = stop
-      ? ({ direction: "EXIT", reasons: [protectionState.reason] } as const)
-      : evaluateStrategy(
-          row.strategy_version,
-          candles,
-          {
-            quantity: Number(p.quantity),
-            cost: Number(p.cost),
-            highWatermark: protectionState.highWatermark,
-            lastEntryPrice: Number(p.last_entry_price),
-            lastEntryAt: p.last_entry_at?.getTime() ?? 0,
-            entryCount: p.entry_count,
-            gridLevelsFilled: p.grid_levels_filled,
-          },
-          advanced,
-          price,
-          now,
-        );
-    const balance = await adapter.getBalances(),
-      coins = balance.list?.[0]?.coin ?? [],
-      available = Number(
-        coins.find((c: any) => c.coin === "USDT")?.walletBalance ?? 0,
-      );
-    // Fail closed on account-level asset discrepancies. Dedicated Testnet accounts are recommended.
-    const accountBtc = Number(
-        coins.find((c: any) => c.coin === row.symbol.replace(/USDT$/, ""))
-          ?.walletBalance ?? 0,
-      ),
-      tracked = Number(
-        (
+  const clock = override?.now ?? Date.now;
+  await tenant(
+    tid,
+    async (db) => {
+      await lockPortfolio(db, tid);
+      if (
+        !(
           await db.query(
-            "SELECT COALESCE(sum(p.quantity),0) AS qty FROM positions p JOIN bots b ON b.id=p.bot_id WHERE b.connection_id=$1 AND p.tenant_id=$2 AND b.symbol=$3",
-            [row.connection_id, tid, row.symbol],
+            "SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS locked",
+            [botId],
           )
-        ).rows[0].qty,
+        ).rows[0].locked
+      )
+        return;
+      const row = (
+        await db.query(
+          "SELECT b.*,c.environment,c.credentials,c.status AS connection_status FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b,c",
+          [botId, tid],
+        )
+      ).rows[0];
+      if (
+        !row ||
+        !["STARTING", "RUNNING", "PAUSED", "STOPPED", "RISK_LOCKED"].includes(
+          row.status,
+        ) ||
+        row.environment !== "TESTNET" ||
+        row.connection_status !== "CONNECTED"
+      )
+        return;
+      const adapter =
+        override?.adapter ??
+        new BybitAdapter(
+          "TESTNET",
+          decrypt<Credentials>(
+            row.credentials,
+            key,
+            `${tid}:${row.connection_id}:${row.environment}`,
+          ),
+        );
+      const feed = override
+        ? null
+        : privateFeed(
+            row.connection_id,
+            decrypt<Credentials>(
+              row.credentials,
+              key,
+              `${tid}:${row.connection_id}:${row.environment}`,
+            ),
+          );
+      const runtime: ExecutionRuntime = {
+        executionEnabled:
+          override?.executionEnabled ??
+          process.env.TRADING_EXECUTION_ENABLED === "true",
+        privateReady:
+          override?.privateReady ??
+          (!!feed?.authenticated && clock() - (feed?.lastMessage ?? 0) < 45000),
+        marketReceivedAt:
+          override?.marketReceivedAt ?? market.get(row.symbol) ?? 0,
+        now: clock,
+        isPrivateReady: () =>
+          override
+            ? override.privateReady
+            : !!feed?.authenticated &&
+              feed.socket.readyState === WebSocket.OPEN &&
+              clock() - feed.lastMessage < 45000,
+        marketTime: () =>
+          override?.marketReceivedAt ?? market.get(row.symbol) ?? 0,
+        afterSubmitting: override?.afterSubmitting,
+      };
+      const hasOrders = (
+        await db.query(
+          "SELECT 1 FROM orders WHERE bot_id=$1 AND tenant_id=$2 LIMIT 1",
+          [botId, tid],
+        )
+      ).rowCount;
+      if (!["STARTING", "RUNNING"].includes(row.status) && !hasOrders) return;
+      const ready = await reconcile(db, tid, row.connection_id, adapter);
+      const controls = (
+        await db.query(
+          "SELECT execution_stopped FROM platform_controls WHERE id=true",
+        )
+      ).rows[0];
+      const p = (
+        await db.query(
+          "SELECT * FROM positions WHERE bot_id=$1 AND tenant_id=$2",
+          [botId, tid],
+        )
+      ).rows[0];
+      const stopped =
+        !["STARTING", "RUNNING"].includes(row.status) ||
+        controls.execution_stopped ||
+        !runtime.executionEnabled;
+      const pending = await managePending(db, tid, botId, adapter, {
+        now: clock(),
+        stop: stopped,
+        protectiveExit: false,
+      });
+      if (!ready) {
+        await db.query(
+          "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
+          [botId, tid],
+        );
+        return;
+      }
+      if (pending.length) {
+        const internal = pending.find((o) => o.state === "INTERNAL_CREATED");
+        if (internal) {
+          await dispatchIntent(db, tid, internal.id, adapter, runtime);
+          return;
+        }
+        // Inspect fresh prices to cancel resting entries before any protective exit; never sell until cancellation/fills reconcile.
+        if (
+          Number(p.quantity) > 0 &&
+          runtime.privateReady &&
+          clock() - runtime.marketReceivedAt < 45000
+        ) {
+          const quote = (await adapter.getTicker(row.symbol)).list?.[0];
+          const check = protection({
+            price: Number(quote?.lastPrice),
+            position: {
+              quantity: Number(p.quantity),
+              cost: Number(p.cost),
+              highWatermark: Number(p.high_watermark),
+              lastEntryPrice: Number(p.last_entry_price),
+              lastEntryAt: p.last_entry_at?.getTime() ?? 0,
+              entryCount: p.entry_count,
+            },
+            ...botConfig.parse(row.config),
+            advanced: advancedConfig.parse(row.advanced_config),
+          });
+          await db.query(
+            "UPDATE positions SET high_watermark=$1 WHERE bot_id=$2 AND tenant_id=$3",
+            [check.highWatermark, botId, tid],
+          );
+          if (check.exit)
+            await managePending(db, tid, botId, adapter, {
+              now: clock(),
+              stop: stopped,
+              protectiveExit: true,
+            });
+        }
+        return;
+      }
+      if (
+        !["STARTING", "RUNNING", "PAUSED"].includes(row.status) ||
+        !runtime.privateReady
+      )
+        return;
+      if (row.status === "STARTING") {
+        await db.query(
+          "UPDATE bots SET status='RUNNING' WHERE id=$1 AND tenant_id=$2",
+          [botId, tid],
+        );
+        await audit(db, tid, "BOT_RECONCILED", { botId });
+        row.status = "RUNNING";
+      }
+      const advanced = advancedConfig.parse(row.advanced_config);
+      const config = botConfig.parse(row.config),
+        ticker = (await adapter.getTicker(row.symbol)).list[0],
+        price = Number(ticker.lastPrice),
+        now = clock();
+      if (
+        !Number.isFinite(price) ||
+        price <= 0 ||
+        now - runtime.marketReceivedAt > 45000
+      )
+        return;
+      const candles = (await adapter.getCandles(row.symbol)).filter(
+          (c) => c.time + 900000 <= now,
+        ),
+        last = candles.at(-1);
+      if (!last) return;
+      const positionQty = new Decimal(p.quantity),
+        entry = positionQty.gt(0)
+          ? new Decimal(p.cost).div(positionQty).toNumber()
+          : 0;
+      const protectionState = protection({
+        price,
+        position: {
+          quantity: Number(p.quantity),
+          cost: Number(p.cost),
+          highWatermark: Number(p.high_watermark),
+          lastEntryPrice: Number(p.last_entry_price),
+          lastEntryAt: p.last_entry_at?.getTime() ?? 0,
+          entryCount: p.entry_count,
+          gridLevelsFilled: p.grid_levels_filled,
+          lastExitPrice: Number(p.last_exit_price),
+        },
+        stopLossPct: config.stopLossPct,
+        takeProfitPct: config.takeProfitPct,
+        advanced,
+      });
+      await db.query(
+        "UPDATE positions SET high_watermark=$1 WHERE bot_id=$2 AND tenant_id=$3",
+        [protectionState.highWatermark, botId, tid],
       );
-    if (Math.abs(accountBtc - tracked) > 0.000001)
-      throw Error("UNEXPECTED_ACCOUNT_POSITION");
-    const portfolio = await portfolioSnapshot(db, tid);
-    const connectionExposure = portfolio.connections[row.connection_id];
-    const reservedQuote = connectionExposure?.pending ?? 0;
-    const proposedNotional = entryNotional(
-      config.capital,
-      config.maxTrade,
-      config.stopLossPct,
-      advanced,
-    );
-    const stats = (
-      await db.query(
-        "SELECT count(*) FILTER(WHERE o.side='Buy') AS trades, COALESCE(sum(CASE WHEN o.side='Sell' THEN e.quantity*e.price ELSE -e.quantity*e.price END-e.fee),0) AS cashflow FROM executions e JOIN orders o ON o.id=e.order_id WHERE o.bot_id=$1 AND e.tenant_id=$2 AND e.executed_at>=date_trunc('day',now())",
-        [botId, tid],
-      )
-    ).rows[0];
-    const controls = (
-      await db.query(
-        "SELECT execution_stopped FROM platform_controls WHERE id=true",
-      )
-    ).rows[0];
-    const dailyPnl = Math.min(
-      0,
-      Number(stats.cashflow) + Number(p.quantity) * price,
-    );
-    const rejection = risk({
-      config: { ...config, maxTrade: proposedNotional },
-      status: row.status,
-      environment: row.environment,
-      liveEnabled: false,
-      connected: true,
-      fresh:
-        now - last.time < 1800000 &&
-        now - (market.get(row.symbol) ?? 0) < 45000,
-      reconciled: true,
-      globalStop: controls.execution_stopped,
-      exposure: Number(p.cost),
-      dailyPnl,
-      trades: Number(stats.trades),
-      drawdownPct: Math.max(
-        0,
-        (-(
-          Number(p.realized_pnl) -
-          Number(p.fees) +
-          Number(p.quantity) * price -
-          Number(p.cost)
-        ) /
-          config.capital) *
-          100,
-      ),
-      consecutiveLosses: 0,
-      available: Math.max(0, available - reservedQuote),
-      spreadPct:
-        ((Number(ticker.ask1Price) - Number(ticker.bid1Price)) / price) * 100,
-    });
-    rejection.push(
-      ...exposureVeto({
-        limits: portfolio.limits,
-        total: portfolio.exposure + portfolio.reserved,
-        connection: (connectionExposure?.exposure ?? 0) + reservedQuote,
-        symbol:
-          (portfolio.symbols[row.symbol]?.exposure ?? 0) +
-          (portfolio.symbols[row.symbol]?.pending ?? 0),
-        pending: portfolio.reserved,
-        openPositions: portfolio.openPositions,
-        newNotional: proposedNotional,
-        alreadyPositioned: positionQty.gt(0),
-        unknownPending: portfolio.unknownPending,
-      }),
-    );
-    // Entries are conservatively locked after any realized loss until operator review.
-    if (Number(p.realized_pnl) - Number(p.fees) < 0)
-      rejection.push("REALIZED_LOSS_REVIEW_REQUIRED");
-    const strategyAllowed =
-      signal.direction === "LONG" && rejection.length === 0;
-    const analysis =
-      mode !== "OFF" && signal.direction !== "EXIT"
-        ? await analyzeBot(
+      const stop = protectionState.exit;
+      const mode = (row.ai_mode ?? "OFF") as AIMode;
+      const news =
+        mode === "OFF" ? [] : await recentNews(db, last.time + 900000);
+      const newsRevision = contextKey(
+        { id: "news", model: "high-impact" },
+        news.filter((n) => (n.impact ?? 0) >= 0.8),
+      );
+      const priceDriven = [
+        "dca-v1.0",
+        "grid-accumulation-v1.0",
+        "grid-accumulation-v1.1",
+      ].includes(row.strategy_version);
+      if (
+        !stop &&
+        !priceDriven &&
+        String(row.last_candle) === String(last.time)
+      ) {
+        if (mode !== "OFF" && row.last_ai_news !== newsRevision) {
+          const refreshed = await analyzeBot(
             db,
             tid,
             botId,
             mode,
             buildMarketInput(candles, news, Date.now(), row.symbol),
-            signal.direction,
-            strategyAllowed,
+            "NONE",
+            false,
             configuredProvider(),
             true,
-          )
-        : {
-            id: null,
-            outcome: null,
-            gate: aiGate(mode, signal.direction, null),
-          };
-    if (
-      analysis.outcome?.error === "AI_BUSY" &&
-      (mode === "FILTER" || signal.direction === "NONE")
-    )
-      return;
-    const entryApproval = entryDecision(
-      mode,
-      signal.direction,
-      rejection,
-      analysis.outcome,
-    );
-    const exit = signal.direction === "EXIT" && positionQty.gt(0),
-      buy = entryApproval.allowed;
-    const signalId = randomUUID();
-    const inserted = await db.query(
-      "INSERT INTO signals(id,tenant_id,bot_id,candle_time,strategy_version,data,decision,ai_analysis_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id",
-      [
-        signalId,
-        tid,
-        botId,
-        stop ? now : last.time,
-        row.strategy_version,
-        JSON.stringify({
-          ...signal,
-          symbol: row.symbol,
-          protection: protectionState,
-        }),
-        JSON.stringify({
-          approved: exit || buy,
-          reasons: exit ? [] : entryApproval.reasons,
-          aiMode: mode,
-          aiReason: analysis.gate.reason,
-          positionSizeModifier: analysis.gate.modifier,
-        }),
-        analysis.id,
-      ],
-    );
-    if (!stop)
-      await db.query(
-        "UPDATE bots SET last_candle=$1,last_ai_news=$4 WHERE id=$2 AND tenant_id=$3",
-        [last.time, botId, tid, newsRevision],
+          );
+          if (refreshed.outcome?.error === "AI_BUSY") return;
+          await db.query(
+            "UPDATE bots SET last_ai_news=$1 WHERE id=$2 AND tenant_id=$3",
+            [newsRevision, botId, tid],
+          );
+        }
+        return;
+      }
+      const signal = stop
+        ? ({ direction: "EXIT", reasons: [protectionState.reason] } as const)
+        : evaluateStrategy(
+            row.strategy_version,
+            candles,
+            {
+              quantity: Number(p.quantity),
+              cost: Number(p.cost),
+              highWatermark: protectionState.highWatermark,
+              lastEntryPrice: Number(p.last_entry_price),
+              lastEntryAt: p.last_entry_at?.getTime() ?? 0,
+              entryCount: p.entry_count,
+              gridLevelsFilled: p.grid_levels_filled,
+              lastExitPrice: Number(p.last_exit_price),
+            },
+            advanced,
+            price,
+            now,
+          );
+      const balance = await adapter.getBalances(),
+        coins = balance.list?.[0]?.coin ?? [],
+        available = Number(
+          coins.find((c: any) => c.coin === "USDT")?.walletBalance ?? 0,
+        );
+      // Fail closed on account-level asset discrepancies. Dedicated Testnet accounts are recommended.
+      const accountBtc = Number(
+          coins.find((c: any) => c.coin === row.symbol.replace(/USDT$/, ""))
+            ?.walletBalance ?? 0,
+        ),
+        tracked = Number(
+          (
+            await db.query(
+              "SELECT COALESCE(sum(p.quantity),0) AS qty FROM positions p JOIN bots b ON b.id=p.bot_id WHERE b.connection_id=$1 AND p.tenant_id=$2 AND b.symbol=$3",
+              [row.connection_id, tid, row.symbol],
+            )
+          ).rows[0].qty,
+        );
+      if (Math.abs(accountBtc - tracked) > 0.000001)
+        throw Error("UNEXPECTED_ACCOUNT_POSITION");
+      const portfolio = await portfolioSnapshot(db, tid);
+      const connectionExposure = portfolio.connections[row.connection_id];
+      const reservedQuote = connectionExposure?.pending ?? 0;
+      const proposedNotional = entryNotional(
+        config.capital,
+        config.maxTrade,
+        config.stopLossPct,
+        advanced,
       );
-    if (
-      !inserted.rowCount ||
-      (!exit && !buy) ||
-      controls.execution_stopped ||
-      process.env.TRADING_EXECUTION_ENABLED !== "true"
-    )
-      return;
-    const instrument = (await adapter.getInstrument(row.symbol)).list[0],
-      side = exit ? "Sell" : "Buy",
-      qty = quantize(
-        exit
-          ? positionQty.toString()
-          : new Decimal(proposedNotional)
-              .mul(analysis.gate.modifier)
-              .div(new Decimal(ticker.ask1Price).mul(1.01))
-              .toString(),
-        instrument.lotSizeFilter.basePrecision,
-      );
-    const instrumentReasons = instrumentVeto(
-      qty,
-      price,
-      instrument.lotSizeFilter,
-    );
-    if (instrumentReasons.length) {
+      const stats = (
+        await db.query(
+          "SELECT count(DISTINCT o.id) FILTER(WHERE o.side='Buy') AS trades,COALESCE(sum(e.realized_gross-e.fee),0) AS realized FROM executions e JOIN orders o ON o.id=e.order_id AND o.tenant_id=e.tenant_id WHERE o.bot_id=$1 AND e.tenant_id=$2 AND e.executed_at>=(date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
+          [botId, tid],
+        )
+      ).rows[0];
+      const cycles = (
+        await db.query(
+          "SELECT net_pnl FROM trade_cycles WHERE tenant_id=$1 AND bot_id=$2 ORDER BY closed_at DESC,id DESC LIMIT $3",
+          [tid, botId, config.maxConsecutiveLosses],
+        )
+      ).rows;
+      let consecutiveLosses = 0;
+      for (const cycle of cycles) {
+        if (Number(cycle.net_pnl) < 0) consecutiveLosses++;
+        else break;
+      }
+      const unrealized = Number(p.quantity) * price - Number(p.cost),
+        dailyPnl = Number(stats.realized) + Math.min(0, unrealized);
+      const equity =
+          config.capital + Number(p.realized_pnl) - Number(p.fees) + unrealized,
+        peak = Math.max(Number(p.peak_equity), config.capital, equity);
       await db.query(
-        "UPDATE signals SET decision=decision||$1::jsonb WHERE id=$2 AND tenant_id=$3",
+        "UPDATE positions SET peak_equity=$1 WHERE bot_id=$2 AND tenant_id=$3",
+        [peak, botId, tid],
+      );
+      const rejection = risk({
+        config: { ...config, maxTrade: proposedNotional },
+        status: row.status,
+        environment: row.environment,
+        liveEnabled: false,
+        connected: true,
+        fresh:
+          now - last.time < 1800000 && now - runtime.marketReceivedAt < 45000,
+        reconciled: true,
+        globalStop: controls.execution_stopped,
+        exposure: Number(p.cost),
+        dailyPnl,
+        trades: Number(stats.trades),
+        drawdownPct:
+          peak <= 0 ? 100 : Math.max(0, ((peak - equity) / peak) * 100),
+        consecutiveLosses,
+        allowScaleIn: priceDriven,
+        available: Math.max(0, available - reservedQuote),
+        spreadPct:
+          ((Number(ticker.ask1Price) - Number(ticker.bid1Price)) / price) * 100,
+      });
+      rejection.push(
+        ...exposureVeto({
+          limits: portfolio.limits,
+          total: portfolio.exposure + portfolio.reserved,
+          connection: (connectionExposure?.exposure ?? 0) + reservedQuote,
+          symbol:
+            (portfolio.symbols[row.symbol]?.exposure ?? 0) +
+            (portfolio.symbols[row.symbol]?.pending ?? 0),
+          pending: portfolio.reserved,
+          openPositions: portfolio.openPositions,
+          newNotional: proposedNotional,
+          alreadyPositioned: positionQty.gt(0),
+          unknownPending: portfolio.unknownPending,
+        }),
+      );
+      const strategyAllowed =
+        signal.direction === "LONG" && rejection.length === 0;
+      const analysis =
+        mode !== "OFF" && signal.direction !== "EXIT"
+          ? await analyzeBot(
+              db,
+              tid,
+              botId,
+              mode,
+              buildMarketInput(candles, news, Date.now(), row.symbol),
+              signal.direction,
+              strategyAllowed,
+              configuredProvider(),
+              true,
+            )
+          : {
+              id: null,
+              outcome: null,
+              gate: aiGate(mode, signal.direction, null),
+            };
+      if (
+        analysis.outcome?.error === "AI_BUSY" &&
+        (mode === "FILTER" || signal.direction === "NONE")
+      )
+        return;
+      const entryApproval = entryDecision(
+        mode,
+        signal.direction,
+        rejection,
+        analysis.outcome,
+      );
+      const exit = signal.direction === "EXIT" && positionQty.gt(0),
+        buy = entryApproval.allowed;
+      const signalId = randomUUID();
+      const inserted = await db.query(
+        "INSERT INTO signals(id,tenant_id,bot_id,candle_time,strategy_version,data,decision,ai_analysis_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id",
         [
-          JSON.stringify({ approved: false, reasons: instrumentReasons }),
           signalId,
           tid,
+          botId,
+          stop || priceDriven ? now : last.time,
+          row.strategy_version,
+          JSON.stringify({
+            ...signal,
+            symbol: row.symbol,
+            protection: protectionState,
+          }),
+          JSON.stringify({
+            approved: exit || buy,
+            reasons: exit ? [] : entryApproval.reasons,
+            aiMode: mode,
+            aiReason: analysis.gate.reason,
+            positionSizeModifier: analysis.gate.modifier,
+          }),
+          analysis.id,
         ],
       );
-      return;
-    }
-    const orderId = randomUUID(),
-      clientId = orderId;
-    await db.query(
-      "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state,symbol,requested_notional) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-      [
-        orderId,
-        tid,
-        botId,
-        signalId,
-        clientId,
-        side,
-        qty,
-        "SUBMITTING",
-        row.symbol,
-        exit
-          ? new Decimal(qty).mul(price).toFixed()
-          : new Decimal(proposedNotional).mul(analysis.gate.modifier).toFixed(),
-      ],
-    );
-    // Persist intent before network I/O. Pending intents prevent another worker from submitting.
-    // Reacquire locks and re-read status before submission.
-    await db.query("COMMIT");
-    await db.query("BEGIN");
-    await db.query("SELECT set_config('app.tenant_id',$1,true)", [tid]);
-    await lockPortfolio(db, tid);
-    await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
-      botId,
-    ]);
-    const current = (
-      await db.query(
-        "SELECT b.status,c.status AS connection_status FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b,c",
-        [botId, tid],
-      )
-    ).rows[0];
-    if (
-      current.status !== "RUNNING" ||
-      current.connection_status !== "CONNECTED" ||
-      Date.now() - (market.get(row.symbol) ?? 0) > 45000 ||
-      (!exit && !aiGate(mode, signal.direction, analysis.outcome).allowed) ||
-      (
+      if (!stop)
         await db.query(
-          "SELECT execution_stopped FROM platform_controls WHERE id=true",
-        )
-      ).rows[0].execution_stopped
-    ) {
-      await db.query(
-        "UPDATE orders SET state='Cancelled' WHERE id=$1 AND tenant_id=$2",
-        [orderId, tid],
+          "UPDATE bots SET last_candle=$1,last_ai_news=$4 WHERE id=$2 AND tenant_id=$3",
+          [last.time, botId, tid, newsRevision],
+        );
+      if (
+        !inserted.rowCount ||
+        (!exit && !buy) ||
+        controls.execution_stopped ||
+        !runtime.executionEnabled
+      )
+        return;
+      const instrument = (await adapter.getInstrument(row.symbol)).list[0],
+        side = exit ? "Sell" : "Buy";
+      const type = exit ? "MARKET" : advanced.entryType;
+      const limitPrice =
+        type === "LIMIT"
+          ? quantize(
+              new Decimal(ticker.bid1Price)
+                .mul(
+                  new Decimal(1).minus(
+                    new Decimal(advanced.limitOffsetPct).div(100),
+                  ),
+                )
+                .toFixed(),
+              instrument.priceFilter.tickSize,
+            )
+          : null;
+      const reference = limitPrice ?? ticker.ask1Price;
+      const qty = quantize(
+        exit
+          ? positionQty.toFixed()
+          : new Decimal(proposedNotional)
+              .mul(analysis.gate.modifier)
+              .div(new Decimal(reference).mul(1.01))
+              .toFixed(),
+        instrument.lotSizeFilter.basePrecision,
       );
-      return;
-    }
-    try {
-      const result = await adapter.placeOrder({
-        symbol: row.symbol,
-        side,
+      const instrumentReasons = instrumentVeto(
         qty,
-        orderLinkId: clientId,
-      });
-      await db.query(
-        "UPDATE orders SET state='SUBMITTED',exchange_id=$1 WHERE id=$2 AND tenant_id=$3",
-        [result.orderId, orderId, tid],
+        type === "LIMIT" ? Number(limitPrice) : price,
+        instrument.lotSizeFilter,
+        type,
       );
-      await audit(db, tid, "ORDER_SUBMITTED", { botId, orderId });
-    } catch {
+      if (instrumentReasons.length) {
+        await db.query(
+          "UPDATE signals SET decision=decision||$1::jsonb WHERE id=$2 AND tenant_id=$3",
+          [
+            JSON.stringify({ approved: false, reasons: instrumentReasons }),
+            signalId,
+            tid,
+          ],
+        );
+        return;
+      }
+      const orderId = randomUUID(),
+        clientId = orderId;
       await db.query(
-        "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
-        [botId, tid],
+        "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state,symbol,requested_notional,order_type,limit_price,time_in_force,expires_at,strategy_version,grid_level,strategy_cycle) VALUES($1,$2,$3,$4,$5,$6,$7,'INTERNAL_CREATED',$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+        [
+          orderId,
+          tid,
+          botId,
+          signalId,
+          clientId,
+          side,
+          qty,
+          row.symbol,
+          exit
+            ? new Decimal(qty).mul(price).toFixed()
+            : new Decimal(proposedNotional)
+                .mul(analysis.gate.modifier)
+                .toFixed(),
+          type,
+          limitPrice,
+          advanced.limitTimeInForce,
+          type === "LIMIT"
+            ? new Date(now + advanced.limitTimeToLiveMinutes * 60000)
+            : null,
+          row.strategy_version,
+          "level" in signal ? signal.level : null,
+          p.strategy_cycle,
+        ],
       );
-      await audit(db, tid, "ORDER_OUTCOME_REQUIRES_RECONCILIATION", {
-        botId,
-        orderId,
-      });
-    }
-  });
+      await orderEvent(db, tid, orderId, "intent", "INTERNAL_CREATED");
+      await db.query("COMMIT");
+      await db.query("BEGIN");
+      await db.query("SELECT set_config('app.tenant_id',$1,true)", [tid]);
+      if (override?.afterIntent) await override.afterIntent();
+      await dispatchIntent(db, tid, orderId, adapter, runtime);
+    },
+    `execution:${tid}`,
+  );
 }
 export async function startWorker() {
   const role = (

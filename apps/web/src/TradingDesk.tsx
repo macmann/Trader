@@ -212,6 +212,7 @@ export function TradingDesk({
                   ...bot.advanced_config,
                   sizing: f.get("sizing"),
                   entryType: f.get("entryType"),
+                  limitTimeInForce: f.get("limitTimeInForce"),
                 };
                 for (const key of [
                   "riskPerTradePct",
@@ -219,6 +220,7 @@ export function TradingDesk({
                   "breakEvenTriggerPct",
                   "breakEvenOffsetPct",
                   "limitOffsetPct",
+                  "limitTimeToLiveMinutes",
                   "dcaStepPct",
                   "dcaMaxEntries",
                   "dcaIntervalMinutes",
@@ -318,13 +320,25 @@ export function TradingDesk({
                   </select>
                 </label>
                 <label>
+                  Limit time in force
+                  <select
+                    name="limitTimeInForce"
+                    defaultValue={
+                      bot.advanced_config?.limitTimeInForce ?? "PostOnly"
+                    }
+                  >
+                    <option value="PostOnly">Post only</option>
+                    <option value="GTC">Good until cancelled</option>
+                  </select>
+                </label>
+                <label>
                   Entry type
                   <select
                     name="entryType"
                     defaultValue={bot.advanced_config?.entryType ?? "MARKET"}
                   >
                     <option value="MARKET">Market</option>
-                    <option value="LIMIT">Limit · preview only</option>
+                    <option value="LIMIT">Limit · expiring order</option>
                   </select>
                 </label>
                 {[
@@ -336,11 +350,8 @@ export function TradingDesk({
                     0,
                   ],
                   ["breakEvenOffsetPct", "Break-even offset (%)", 0],
-                  [
-                    "limitOffsetPct",
-                    "Limit discount from scenario price (%)",
-                    0.1,
-                  ],
+                  ["limitOffsetPct", "Limit discount (%)", 0.1],
+                  ["limitTimeToLiveMinutes", "Limit lifetime (minutes)", 15],
                   ["dcaStepPct", "DCA price decline per entry (%)", 2],
                   ["dcaMaxEntries", "Maximum DCA entries", 3],
                   ["dcaIntervalMinutes", "Minimum DCA interval (minutes)", 60],
@@ -357,6 +368,7 @@ export function TradingDesk({
                       step={
                         [
                           "dcaMaxEntries",
+                          "limitTimeToLiveMinutes",
                           "dcaIntervalMinutes",
                           "gridLevels",
                         ].includes(String(name))
@@ -385,10 +397,11 @@ export function TradingDesk({
           <section className="panel note">
             <h3>Hypothetical planning</h3>
             <p className="muted">
-              Limit-entry, DCA and grid accumulation are preview-only.
-              Previewing does not place or reserve an order. Trend/breakout
-              entry evaluation needs closed candles; this simple form supplies a
-              price scenario only.
+              This preview never places or reserves an order. The worker
+              supports limit entries, bounded DCA and grid accumulation when
+              Testnet execution is enabled. Trend/breakout entry evaluation
+              needs closed candles; this simple form supplies a price scenario
+              only.
             </p>
             <form
               onSubmit={submit(async (f) => {

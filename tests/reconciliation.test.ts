@@ -14,6 +14,8 @@ const uid = randomUUID(),
   clientId = randomUUID();
 after(async () => {
   for (const table of [
+    "trade_cycles",
+    "order_events",
     "executions",
     "orders",
     "positions",

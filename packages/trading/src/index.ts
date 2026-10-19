@@ -7,11 +7,16 @@ export type Symbol = z.infer<typeof symbolSchema>;
 export const strategies = [
   { id: "trend-v1.0", name: "Trend confirmation", execution: "DEVELOPMENT" },
   { id: "breakout-v1.0", name: "Volume breakout", execution: "DEVELOPMENT" },
-  { id: "dca-v1.0", name: "Bounded DCA", execution: "PREVIEW_ONLY" },
+  { id: "dca-v1.0", name: "Bounded DCA", execution: "DEVELOPMENT" },
   {
     id: "grid-accumulation-v1.0",
-    name: "Grid accumulation",
-    execution: "PREVIEW_ONLY",
+    name: "Grid accumulation (legacy)",
+    execution: "DEVELOPMENT",
+  },
+  {
+    id: "grid-accumulation-v1.1",
+    name: "Grid accumulation with pullback",
+    execution: "DEVELOPMENT",
   },
 ] as const;
 export const strategySchema = z.enum([
@@ -19,6 +24,7 @@ export const strategySchema = z.enum([
   "breakout-v1.0",
   "dca-v1.0",
   "grid-accumulation-v1.0",
+  "grid-accumulation-v1.1",
 ]);
 export type StrategyVersion = z.infer<typeof strategySchema>;
 export const advancedConfig = z
@@ -29,6 +35,8 @@ export const advancedConfig = z
     breakEvenTriggerPct: z.number().min(0).max(100).default(0),
     breakEvenOffsetPct: z.number().min(0).max(2).default(0),
     entryType: z.enum(["MARKET", "LIMIT"]).default("MARKET"),
+    limitTimeToLiveMinutes: z.number().int().min(1).max(1440).default(15),
+    limitTimeInForce: z.enum(["GTC", "PostOnly"]).default("PostOnly"),
     limitOffsetPct: z.number().min(0).max(5).default(0.1),
     dcaStepPct: z.number().positive().max(50).default(2),
     dcaMaxEntries: z.number().int().min(1).max(20).default(3),
@@ -58,6 +66,7 @@ export type PositionState = {
   lastEntryAt: number;
   entryCount: number;
   gridLevelsFilled?: number[];
+  lastExitPrice?: number;
 };
 export function entryNotional(
   capital: number,
@@ -195,6 +204,13 @@ export function evaluateStrategy(
     return { direction: "NONE", reasons: ["OUTSIDE_GRID_RANGE"] };
   const step = (upper - lower) / (count - 1),
     level = Math.min(count - 1, Math.floor((price - lower) / step));
+  if (
+    version === "grid-accumulation-v1.1" &&
+    state.quantity === 0 &&
+    (state.lastExitPrice ?? 0) > 0 &&
+    price > (state.lastExitPrice ?? 0) - step
+  )
+    return { direction: "NONE", reasons: ["WAIT_FOR_GRID_CYCLE_PULLBACK"] };
   if (state.quantity > 0 && price >= state.cost / state.quantity + step)
     return { direction: "EXIT", reasons: ["GRID_PROFIT_RUNG_REACHED"] };
   if ((state.gridLevelsFilled ?? []).includes(level))
@@ -327,7 +343,11 @@ export function planPreview(input: {
     if (actualNotional > input.available) reasons.push("INSUFFICIENT_BALANCE");
     if (
       p.quantity > 0 &&
-      !["dca-v1.0", "grid-accumulation-v1.0"].includes(input.strategy)
+      ![
+        "dca-v1.0",
+        "grid-accumulation-v1.0",
+        "grid-accumulation-v1.1",
+      ].includes(input.strategy)
     )
       reasons.push("ALREADY_POSITIONED");
     reasons.push(
@@ -375,7 +395,7 @@ export function configurationVeto(
   advanced: AdvancedConfig,
 ): string | null {
   if (
-    strategy === "grid-accumulation-v1.0" &&
+    strategy.startsWith("grid-accumulation-") &&
     (advanced.gridLower === null ||
       advanced.gridUpper === null ||
       advanced.gridUpper <= advanced.gridLower)
@@ -383,17 +403,12 @@ export function configurationVeto(
     return "GRID_RANGE_REQUIRED";
   return null;
 }
-export function previewOnly(strategy: string, advanced: AdvancedConfig) {
-  return (
-    ["dca-v1.0", "grid-accumulation-v1.0"].includes(strategy) ||
-    advanced.entryType === "LIMIT"
-  );
-}
 
 export function instrumentVeto(
   quantity: string,
   price: number,
   filter: Record<string, unknown>,
+  orderType: "MARKET" | "LIMIT" = "MARKET",
 ): string[] {
   try {
     const q = new Decimal(quantity),
@@ -401,7 +416,11 @@ export function instrumentVeto(
       step = new Decimal(String(filter.basePrecision)),
       minValue = new Decimal(String(filter.minOrderAmt)),
       maxQty = new Decimal(
-        String(filter.maxMarketOrderQty ?? filter.maxOrderQty),
+        String(
+          (orderType === "LIMIT"
+            ? filter.maxLimitOrderQty
+            : filter.maxMarketOrderQty) ?? filter.maxOrderQty,
+        ),
       );
     if ([q, p, step, minValue, maxQty].some((v) => !v.isFinite() || v.lte(0)))
       return ["INVALID_INSTRUMENT_METADATA"];

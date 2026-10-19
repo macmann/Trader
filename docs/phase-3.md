@@ -1,58 +1,44 @@
-# Phase 3 — advanced Spot trading development milestone
+# Phase 3 — advanced Spot trading
 
-Phase 2 was merged through PR #2. This milestone adds multi-pair configuration, versioned strategies, portfolio accounting, risk-based sizing, and software protection controls. It does not complete the Phase 1 execution/reconciliation release requirements. Both trading switches must remain disabled.
+Phase 3 adds executable multi-pair strategies, portfolio controls and durable order lifecycle handling. This remains a development Testnet implementation. Live connections are rejected and both execution switches remain disabled by default. Simulated integration tests do not replace authenticated exchange acceptance.
 
-## Available development paths
+## Strategies and configuration
 
-| Capability             | Current behavior                                                                                                                    |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Pairs                  | BTCUSDT, ETHUSDT, SOLUSDT; Spot; USDT quote; 15-minute candles                                                                      |
-| Multiple bots          | Independent tenant/bot configuration, positions, strategy versions, signals and AI histories                                        |
-| Trend                  | Existing `trend-v1.0` behavior is preserved                                                                                         |
-| Breakout               | `breakout-v1.0`: close above the preceding 20-candle high with volume above 150% of that window's average; exit below its low       |
-| Risk sizing            | Fixed trade budget, or allocation × risk-per-trade percentage ÷ stop-loss percentage; capped by max trade and capital               |
-| Software trailing stop | Persisted high-water mark; stop never loosens when price retraces                                                                   |
-| Software break-even    | Activates from the persisted peak; cannot override a tighter trailing stop                                                          |
-| Portfolio controls     | Workspace/connection/pair allocation and cost-exposure ceilings; distinct open/reserved bot-position limit                          |
-| Limit entries          | Hypothetical planner only; starting these bots is rejected                                                                          |
-| Bounded DCA            | `dca-v1.0` planner only: initial entry, price-step/interval checks and bounded entry count; no averaging down beyond bot allocation |
-| Grid accumulation      | `grid-accumulation-v1.0` planner only: bounded accumulation rungs with aggregate profit exit; not a two-sided resting-order grid    |
-| Derivatives            | Unsupported and rejected; no short selling, leverage, perpetuals, inverse contracts or options                                      |
+Supported pairs are BTCUSDT, ETHUSDT and SOLUSDT, Spot only, with 15-minute candles. Multiple bots retain independent allocations, positions, signals and versioned strategy history. Derivatives, leverage and short selling are rejected.
 
-The worker uses each bot's pair and strategy, per-pair public-feed freshness, and symbol-scoped account reconciliation checks. AI snapshots, cache keys, manual requests, and historical records carry the pair so changing a stopped flat bot cannot relabel historical AI analysis.
+- `trend-v1.0` retains its original EMA/RSI/volume behavior.
+- `breakout-v1.0` requires range and volume confirmation.
+- `dca-v1.0` executes bounded layers with price-step, interval, entry-count and total-capital checks.
+- `grid-accumulation-v1.0` preserves the original accumulation rules. New `grid-accumulation-v1.1` requires a pullback before reentering after a completed cycle. Both track consumed rungs durably and exit the aggregate position; neither is a two-sided market-making grid.
 
-## Configure and preview
+Market and Limit entries are supported. Limit orders persist rounded price, GTC/PostOnly policy and configurable expiry. Only one unresolved order per bot progresses at a time. Fixed-budget or stop-distance risk sizing is capped by max trade, remaining allocation and portfolio limits. Software trailing stops and break-even levels use a persisted high-water mark and never loosen an existing tighter stop.
 
-1. Create a connected Testnet bot with the desired pair and Trend/Breakout/DCA strategy. DCA is explicitly preview-only.
-2. Open **Portfolio** to set total, per-connection and per-pair ceilings, and the open/reserved-position limit. The defaults are $1,000 for each allocation/exposure ceiling and five positions. These are examples, not recommended investment allocations.
-3. Select a stopped, flat bot to edit capital, max trade, loss controls, pair, versioned strategy, sizing, trailing/break-even rules, or planner parameters. Configuration changes are rejected while a position or unresolved order exists. Strategy logic is not edited in place; the selected version is stored on each signal.
-4. Use **Hypothetical planning** with a scenario price, available balance, quantity increment and minimum order value. The response is always `simulationOnly: true` and `orderSubmissionEnabled: false`. The planner does not call create-order APIs, reserve funds, persist fills, or advance DCA/grid inventory. It reads current tracked bot state; a new flat DCA bot therefore keeps previewing its first entry until that state changes through actual reconciliation.
-5. Trend and Breakout need closed candles for entry signals. The simple preview form supplies no candle history and normally reports WAIT for flat bots. API callers can supply up to 100 hypothetical candles. This data is never treated as authoritative market data or used for execution.
+Configure stopped, flat bots in the dashboard. Configuration changes are rejected while positions or unresolved orders exist. Portfolio settings cap allocation and cost exposure across the workspace, connection and pair, including pending reservations and distinct held/reserved bot positions. Allocation is an accounting limit; funds remain at the exchange.
 
-A preview PASS covers its sizing, hypothetical exchange increments/minimums and allocation/exposure checks. It is not authorization to trade: it does not prove authenticated exchange connectivity, live market freshness, daily-loss correctness, AI permission, protective-order coverage, or execution readiness. Quantity/tick/minimum values entered into the preview are hypothetical, not verified exchange metadata.
+The hypothetical planner stays separate from execution: it always returns `simulationOnly: true` and `orderSubmissionEnabled: false`, uses hypothetical instrument inputs, and cannot create orders or advance ladder state.
 
-## Portfolio accounting and reservations
+## Execution and recovery
 
-Configuration allocations are accounting limits; funds remain at the exchange. Creation and configuration updates serialize on a workspace row lock so concurrent requests cannot exceed saved allocation ceilings. Portfolio settings use FORCE RLS and explicit tenant predicates. Unknown outstanding-order notional fails closed and prevents configuration changes.
+The worker reconciles before evaluating, applies strategy/AI/risk checks, persists the full order intent and reservation, then rechecks execution controls before submission. A committed attempted-send marker precedes network I/O. Bybit `orderLinkId` identifies each intent. An unsent intent can recover after restart; attempted or ambiguous requests are reconciled rather than blindly resubmitted. Unknown outcomes retain reservations and lock trading.
 
-Worker entry checks include tracked position cost and the full pending-buy reservation at workspace, connection and pair scope. Position counts deduplicate a held bot and its pending buy. Reservations are persisted on internal order intents before network submission and remain counted during uncertain outcomes. They release from the aggregate only when the order is known terminal; FAILED is deliberately not treated as terminal. Legacy pending orders lacking a notional require reconciliation rather than an invented estimate. Pending sells do not release existing position exposure before fills arrive.
+Workspace and bot locks serialize concurrent workers. Grid rung/cycle uniqueness also has a database constraint. Every order stores its strategy version; append-only order events record lifecycle transitions. Fills deduplicate by tenant and exchange execution ID, including partial fills and quote/base-asset fees. Unsupported fee currencies fail closed. Entry count advances once per filled buy order. A flat exit records a net closed-cycle result and resets ladder state.
 
-Market buy quantities use the chosen trade budget, AI reduction where applicable, current ask, and a conservative 1% quantity-sizing buffer. The full budget is reserved. Exchange minimum/maximum quantities, minimum notionals, and increments are checked from instrument metadata before submission; missing required metadata rejects the signal. These controls do not replace the still-pending authoritative fee/balance/ledger work, and the buffer is not a guarantee against every execution cost.
+Resting entries are cancelled when stopped, expired, globally disabled, or superseded by a protective exit. Cancellation requests and uncertain responses retain reservations until exchange reconciliation proves terminal status and all reported fills have arrived. A terminal order with missing executions stays RECONCILING. Protective exits wait for entry cancellation/fill reconciliation before selling tracked inventory.
 
-The dashboard reports cost-basis exposure and pending reservations, not live marked-to-market equity. Per-pair limits combine the same pair across connections. Per-connection limits apply to each stored exchange connection; connecting the same underlying exchange account through multiple API-key records is not yet detected. Do not use duplicate connections for one account. Reconciliation completeness, daily P&L, true peak-equity drawdown, cross-account capital availability and full fee handling remain Phase 1 release requirements.
+Reconciliation pages open orders and execution history with cursor-loop detection. It uses overlapping, bounded seven-day history; longer unresolved downtime locks execution for review. Unexpected exchange orders or account inventory discrepancies also lock trading. Migration 004 marks connections with legacy execution records as ledger version 1 and risk-locks their bots: these require an operator-verified ledger rebuild against exchange history before use. Merely changing the version flag is unsafe.
 
-## Protection and lifecycle boundaries
+## Risk and operating boundaries
 
-Trailing and break-even calculations are deterministic software checks. High-water marks and entry metadata persist in PostgreSQL. Partial fills increment entry count once per buy order. Fills for different pairs update their own bot positions. A full tracked exit resets the high-water mark and entry count.
+New entries include tracked position cost and complete pending-buy reservations in all portfolio limits. Unknown notional fails closed. Final dispatch checks available quote balance, reservations, current market-buy budget, bot/global state, freshness, private-stream readiness and AI Filter validity. Fees reduce tracked net inventory and performance. Consecutive-loss limits use closed-cycle results; drawdown uses the persisted observed equity peak. Daily loss uses today's fill results plus negative current unrealized P&L, a conservative approximation rather than a midnight equity ledger.
 
-Stops require RUNNING status, a healthy worker, fresh per-pair public data, an authenticated private feed and successful reconciliation. Stop/pause still prevents execution and does not install exchange-native protection, cancel all exchange orders, or flatten a position. An outage or restart cannot reconstruct unobserved price peaks. Exchange-native stops, complete private event processing and tested recovery remain mandatory before enabling orders.
+Stop cancels pending entries but does not liquidate inventory. Pause blocks new entries while retaining software risk exits. Stopped bots do not maintain protective exits. Software protection requires a healthy worker, fresh market data, private-feed readiness and successful reconciliation. It is not exchange-native protection and cannot reconstruct peaks missed during an outage. Complete event-driven private-stream processing and exchange-native protection remain production release requirements.
 
-Limit, DCA and grid configuration is rejected at bot start and guarded again in the worker. Their production execution needs durable ladder/rung state, atomic reservations across layers, resting-order expiry/cancellation, fee-aware fills, and crash/retry/reconnect tests. No REST/worker flag bypass for these planners is provided.
+Duplicate connection records for the same underlying exchange account are not detected. Use dedicated accounts and avoid duplicate connections. Live trading, production email delivery, deployment operations and production acceptance remain outside this tested development release.
 
-## Setup and verification
+## Validation and setup
 
-Run `npm run setup` to apply migration `003-advanced-trading.sql`, refresh local runtime grants, and preserve existing private `.env` and encryption keys. Then run `npm test` and `npm run build`. Tests run in a temporary database that is removed afterward.
+Run `npm run setup` to apply checksum-verified migrations through `004-execution-lifecycle.sql` and refresh restricted database grants without replacing private encryption keys. Run `npm test`, `npm run build` and `npm audit --omit=dev --audit-level=high`.
 
-Coverage includes concurrent allocation creation, tenant-owned settings and configuration, preview non-execution, unknown pending reservations, risk-budget sizing, trailing/break-even monotonicity, strategy boundaries, instrument limits, mixed BTC/ETH fills, and partial-fill entry counting. Worker WebSockets use the inherited HTTPS proxy through a TLS-verified proxy agent; Node native fetch retains its environment-proxy flag.
+Tests use an isolated PostgreSQL database and a simulated exchange. They exercise actual worker dispatch, bounded DCA, fee-aware fills, limit price/TIF/expiry, uncertain cancellation, grid cycles, concurrent workers, fault recovery before/after attempted submission, lost acknowledgements, stops, freshness gates, pagination and missing-fill reconciliation, alongside authentication, tenant isolation, AI and portfolio tests. No external orders are placed.
 
-Current-instance public Bybit instrument requests for all three pairs returned HTTP 403 (reported by the adapter as REGION_RESTRICTED). Authenticated Testnet trading and external pair availability are not verified. Exchange or regional restrictions must be surfaced, not bypassed. The supported local workflow remains code development, deterministic previews, and isolated tests until exchange access and the remaining Phase 1 execution checks are satisfied.
+This cloud instance previously received HTTP 403 from public Bybit instrument endpoints. Authenticated Testnet trading and pair availability remain unverified; restrictions must be surfaced rather than bypassed. Keep `TRADING_EXECUTION_ENABLED=false` and `LIVE_TRADING_PLATFORM_ENABLED=false` until external acceptance and the remaining production prerequisites are satisfied.

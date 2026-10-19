@@ -14,7 +14,6 @@ import {
   strategySchema,
   advancedConfig,
   configurationVeto,
-  previewOnly,
 } from "../../../packages/trading/src/index.ts";
 import {
   lockPortfolio,
@@ -422,6 +421,16 @@ app.delete("/api/connections/:id", async (req, reply) => {
       [id, tid],
     );
     if (!r.rowCount) return reply.code(404).send({ error: "NOT_FOUND" });
+    const exposed = (
+      await db.query(
+        "SELECT 1 FROM bots b LEFT JOIN positions p ON p.bot_id=b.id WHERE b.connection_id=$1 AND b.tenant_id=$2 AND (COALESCE(p.quantity,0)>0 OR EXISTS(SELECT 1 FROM orders o WHERE o.bot_id=b.id AND o.tenant_id=b.tenant_id AND o.state NOT IN ('Filled','Cancelled','Rejected','Deactivated','FILLED','CANCELLED','REJECTED'))) LIMIT 1",
+        [id, tid],
+      )
+    ).rowCount;
+    if (exposed)
+      return reply
+        .code(409)
+        .send({ error: "OPEN_EXPOSURE_PREVENTS_DISCONNECT" });
     await db.query(
       "UPDATE bots SET status='STOPPED' WHERE connection_id=$1 AND tenant_id=$2 AND status<>'ARCHIVED'",
       [id, tid],
@@ -518,16 +527,6 @@ app.post("/api/bots/:id/:action", async (req, reply) => {
       return reply.code(409).send({ error: "BOT_ARCHIVED" });
     if (p.action === "start" && b.rows[0].connection_status !== "CONNECTED")
       return reply.code(409).send({ error: "EXCHANGE_NOT_CONNECTED" });
-    if (
-      p.action === "start" &&
-      previewOnly(
-        b.rows[0].strategy_version,
-        advancedConfig.parse(b.rows[0].advanced_config),
-      )
-    )
-      return reply
-        .code(409)
-        .send({ error: "STRATEGY_OR_LIMIT_ENTRY_IS_PREVIEW_ONLY" });
     const status = { start: "STARTING", pause: "PAUSED", stop: "STOPPED" }[
       p.action
     ];

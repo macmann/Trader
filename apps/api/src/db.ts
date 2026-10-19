@@ -3,9 +3,20 @@ export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 export async function tenant<T>(
   id: string,
   fn: (db: pg.PoolClient) => Promise<T>,
+  sessionLock?: string,
 ): Promise<T> {
   const db = await pool.connect();
+  let locked = false;
   try {
+    if (sessionLock) {
+      locked = (
+        await db.query(
+          "SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked",
+          [sessionLock],
+        )
+      ).rows[0].locked;
+      if (!locked) return undefined as T;
+    }
     await db.query("BEGIN");
     await db.query("SELECT set_config('app.tenant_id',$1,true)", [id]);
     const result = await fn(db);
@@ -15,6 +26,10 @@ export async function tenant<T>(
     await db.query("ROLLBACK");
     throw e;
   } finally {
+    if (locked)
+      await db.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [
+        sessionLock,
+      ]);
     db.release();
   }
 }
