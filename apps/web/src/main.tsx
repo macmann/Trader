@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { Intelligence } from "./Intelligence.tsx";
 type Bot = {
   id: string;
   name: string;
   status: string;
   environment: string;
   symbol: string;
+  ai_mode?: string;
   config: {
     capital: number;
     maxTrade: number;
@@ -265,6 +267,8 @@ function App() {
             "Overview",
             "Bots",
             "Exchanges",
+            "AI Analysis",
+            "News",
             "Orders",
             "Signals",
             "Activity",
@@ -275,7 +279,7 @@ function App() {
               key={p}
               onClick={() => setPage(p)}
             >
-              <span>{["◫", "◇", "⇄", "≡", "⌁", "◷", "⊙"][i]}</span>
+              <span>{["◫", "◇", "⇄", "✧", "▤", "≡", "⌁", "◷", "⊙"][i]}</span>
               {p}
             </button>
           ))}
@@ -471,7 +475,7 @@ function App() {
                           </div>
                           <p className="muted">
                             SL {b.config.stopLossPct}% · TP{" "}
-                            {b.config.takeProfitPct}% · AI off
+                            {b.config.takeProfitPct}% · AI {b.ai_mode ?? "OFF"}
                           </p>
                           <div className="actions">
                             {["start", "pause", "stop"].map((action) => (
@@ -500,8 +504,8 @@ function App() {
                     <h3>Every trade has a reason.</h3>
                     <p>
                       Market data → Trend strategy → Risk checks → Execution.
-                      Review Signals to see approvals and rejections. AI
-                      analysis is planned for Phase 2.
+                      Review Signals to see approvals and rejections. Configure
+                      Advisory or Filter in AI Analysis.
                     </p>
                     <small>
                       Stop and pause prevent new execution. They do not
@@ -511,6 +515,14 @@ function App() {
                     </small>
                   </section>
                 </>
+              )}
+              {["AI Analysis", "News"].includes(page) && (
+                <Intelligence
+                  page={page}
+                  bots={bots}
+                  request={api}
+                  refreshBots={refresh}
+                />
               )}
               {page === "Exchanges" && (
                 <>

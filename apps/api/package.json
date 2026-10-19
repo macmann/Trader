@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx --env-file=../../.env src/server.ts"
+    "dev": "node --use-env-proxy --import tsx --env-file=../../.env src/server.ts"
   },
   "dependencies": {
     "fastify": "^5.6.0",

@@ -23,6 +23,7 @@ after(async () => {
         "executions",
         "orders",
         "signals",
+        "ai_analyses",
         "positions",
         "bots",
         "exchange_connections",
@@ -53,7 +54,12 @@ async function account() {
     )
   ).rows[0];
   users.push(u.id);
-  const mail = (await readFile(".local/mail.jsonl", "utf8"))
+  const mail = (
+    await readFile(
+      process.env.TEST_MAIL_OUTBOX_PATH ?? ".local/mail.jsonl",
+      "utf8",
+    )
+  )
     .trim()
     .split("\n")
     .map((v) => JSON.parse(v))
@@ -202,6 +208,125 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
       .status,
     "STOPPED",
   );
+
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${botId}/ai`,
+        headers: b.headers,
+        payload: { mode: "FILTER" },
+      })
+    ).statusCode,
+    404,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${botId}/ai`,
+        headers: a.headers,
+        payload: { mode: "WEIGHTED" },
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${botId}/ai`,
+        headers: a.headers,
+        payload: { mode: "FILTER" },
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(
+    (await app.inject({ url: "/api/bots", headers: a.headers })).json()[0]
+      .ai_mode,
+    "FILTER",
+  );
+  await app.inject({
+    method: "POST",
+    url: `/api/bots/${botId}/start`,
+    headers: a.headers,
+    payload: {},
+  });
+  assert.equal(
+    (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/bots/${botId}/ai`,
+        headers: a.headers,
+        payload: { mode: "ADVISORY" },
+      })
+    ).statusCode,
+    409,
+  );
+  await app.inject({
+    method: "POST",
+    url: "/api/stop-all",
+    headers: a.headers,
+    payload: {},
+  });
+  const { analyzeBot } = await import("../apps/worker/src/intelligence.ts");
+  const snapshot = {
+    symbol: "BTCUSDT" as const,
+    interval: "15m" as const,
+    candleTime: Math.floor(Date.now() / 900000) * 900000 - 900000,
+    price: 100,
+    indicators: {
+      ema9: 101,
+      ema21: 99,
+      rsi14: 57,
+      atr14: 3,
+      relativeVolume: 1.2,
+    },
+    news: [],
+  };
+  const analysis = await tenant(a.tid, (db) =>
+    analyzeBot(db, a.tid, botId, "FILTER", snapshot, "LONG", true, null),
+  );
+  assert.equal(analysis.gate.allowed, false);
+  assert.equal(
+    (await app.inject({ url: "/api/ai/analyses", headers: a.headers })).json()
+      .length,
+    1,
+  );
+  assert.equal(
+    (await app.inject({ url: "/api/ai/analyses", headers: b.headers })).json()
+      .length,
+    0,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: `/api/ai/analyses?botId=${botId}`,
+        headers: b.headers,
+      })
+    ).json().length,
+    0,
+  );
+  const comparison = (
+    await app.inject({ url: "/api/ai/comparison", headers: a.headers })
+  ).json();
+  assert.equal(comparison.strategy_approved, 1);
+  assert.equal(comparison.filter_approved, 0);
+  assert.equal(
+    (await app.inject({ url: "/api/ai/comparison", headers: b.headers })).json()
+      .candidate_signals,
+    0,
+  );
+  assert.ok(
+    !(
+      await app.inject({ url: "/api/ai/status", headers: a.headers })
+    ).body.includes("AI_API_KEY"),
+  );
+  assert.equal(
+    (await app.inject({ url: "/api/news", headers: a.headers })).statusCode,
+    200,
+  );
   const connectionJson = (
     await app.inject({ url: "/api/connections", headers: a.headers })
   ).body;
@@ -267,7 +392,12 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
     headers: { origin },
     payload: { email: a.email },
   });
-  const mail = (await readFile(".local/mail.jsonl", "utf8"))
+  const mail = (
+      await readFile(
+        process.env.TEST_MAIL_OUTBOX_PATH ?? ".local/mail.jsonl",
+        "utf8",
+      )
+    )
       .trim()
       .split("\n")
       .map((v) => JSON.parse(v))

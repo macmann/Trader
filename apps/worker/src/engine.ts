@@ -1,3 +1,18 @@
+import {
+  buildMarketInput,
+  aiGate,
+  entryDecision,
+  contextKey,
+  type AIMode,
+} from "../../../packages/ai-core/src/index.ts";
+import {
+  analyzeBot,
+  recentNews,
+  newsCycle,
+  warmAIContext,
+  closeIntelligence,
+} from "./intelligence.ts";
+import { configuredProvider } from "../../../packages/ai-providers/src/index.ts";
 import { createHmac, randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { Decimal } from "decimal.js";
@@ -278,7 +293,33 @@ async function tick(tid: string, botId: string) {
       positionQty.gt(0) &&
       (price <= entry * (1 - config.stopLossPct / 100) ||
         price >= entry * (1 + config.takeProfitPct / 100));
-    if (!stop && String(row.last_candle) === String(last.time)) return;
+    const mode = (row.ai_mode ?? "OFF") as AIMode;
+    const news = mode === "OFF" ? [] : await recentNews(db, last.time + 900000);
+    const newsRevision = contextKey(
+      { id: "news", model: "high-impact" },
+      news.filter((n) => (n.impact ?? 0) >= 0.8),
+    );
+    if (!stop && String(row.last_candle) === String(last.time)) {
+      if (mode !== "OFF" && row.last_ai_news !== newsRevision) {
+        const refreshed = await analyzeBot(
+          db,
+          tid,
+          botId,
+          mode,
+          buildMarketInput(candles, news),
+          "NONE",
+          false,
+          configuredProvider(),
+          true,
+        );
+        if (refreshed.outcome?.error === "AI_BUSY") return;
+        await db.query(
+          "UPDATE bots SET last_ai_news=$1 WHERE id=$2 AND tenant_id=$3",
+          [newsRevision, botId, tid],
+        );
+      }
+      return;
+    }
     const signal = stop
       ? ({ direction: "EXIT", reasons: ["STOP_LOSS_OR_TAKE_PROFIT"] } as const)
       : evaluate(candles);
@@ -347,11 +388,42 @@ async function tick(tid: string, botId: string) {
     // Entries are conservatively locked after any realized loss until operator review.
     if (Number(p.realized_pnl) - Number(p.fees) < 0)
       rejection.push("REALIZED_LOSS_REVIEW_REQUIRED");
+    const strategyAllowed =
+      signal.direction === "LONG" && rejection.length === 0;
+    const analysis =
+      mode !== "OFF" && signal.direction !== "EXIT"
+        ? await analyzeBot(
+            db,
+            tid,
+            botId,
+            mode,
+            buildMarketInput(candles, news),
+            signal.direction,
+            strategyAllowed,
+            configuredProvider(),
+            true,
+          )
+        : {
+            id: null,
+            outcome: null,
+            gate: aiGate(mode, signal.direction, null),
+          };
+    if (
+      analysis.outcome?.error === "AI_BUSY" &&
+      (mode === "FILTER" || signal.direction === "NONE")
+    )
+      return;
+    const entryApproval = entryDecision(
+      mode,
+      signal.direction,
+      rejection,
+      analysis.outcome,
+    );
     const exit = signal.direction === "EXIT" && positionQty.gt(0),
-      buy = signal.direction === "LONG" && rejection.length === 0;
+      buy = entryApproval.allowed;
     const signalId = randomUUID();
     const inserted = await db.query(
-      "INSERT INTO signals(id,tenant_id,bot_id,candle_time,strategy_version,data,decision) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id",
+      "INSERT INTO signals(id,tenant_id,bot_id,candle_time,strategy_version,data,decision,ai_analysis_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id",
       [
         signalId,
         tid,
@@ -361,14 +433,18 @@ async function tick(tid: string, botId: string) {
         JSON.stringify(signal),
         JSON.stringify({
           approved: exit || buy,
-          reasons: exit ? [] : rejection,
+          reasons: exit ? [] : entryApproval.reasons,
+          aiMode: mode,
+          aiReason: analysis.gate.reason,
+          positionSizeModifier: analysis.gate.modifier,
         }),
+        analysis.id,
       ],
     );
     if (!stop)
       await db.query(
-        "UPDATE bots SET last_candle=$1 WHERE id=$2 AND tenant_id=$3",
-        [last.time, botId, tid],
+        "UPDATE bots SET last_candle=$1,last_ai_news=$4 WHERE id=$2 AND tenant_id=$3",
+        [last.time, botId, tid, newsRevision],
       );
     if (
       !inserted.rowCount ||
@@ -382,7 +458,10 @@ async function tick(tid: string, botId: string) {
       qty = quantize(
         exit
           ? positionQty.toString()
-          : new Decimal(config.maxTrade).div(price).toString(),
+          : new Decimal(config.maxTrade)
+              .mul(analysis.gate.modifier)
+              .div(price)
+              .toString(),
         instrument.lotSizeFilter.basePrecision,
       );
     if (
@@ -413,6 +492,8 @@ async function tick(tid: string, botId: string) {
     if (
       current.status !== "RUNNING" ||
       current.connection_status !== "CONNECTED" ||
+      Date.now() - market.lastMessage > 45000 ||
+      (!exit && !aiGate(mode, signal.direction, analysis.outcome).allowed) ||
       (
         await db.query(
           "SELECT execution_stopped FROM platform_controls WHERE id=true",
@@ -479,8 +560,28 @@ export async function startWorker() {
     if (publicSocket?.readyState === WebSocket.OPEN)
       publicSocket.send(JSON.stringify({ op: "ping" }));
   }, 20000);
+  let newsJob: Promise<void> | null = null,
+    marketJob: Promise<void> | null = null;
   while (!closing) {
     try {
+      if (!newsJob)
+        newsJob = newsCycle()
+          .catch(() =>
+            console.error(JSON.stringify({ event: "NEWS_CYCLE_FAILED" })),
+          )
+          .finally(() => {
+            newsJob = null;
+          });
+      if (!marketJob)
+        marketJob = warmAIContext()
+          .catch(() =>
+            console.error(
+              JSON.stringify({ event: "AI_CONTEXT_REFRESH_FAILED" }),
+            ),
+          )
+          .finally(() => {
+            marketJob = null;
+          });
       const tenants = await pool.query("SELECT id FROM workspaces");
       const active = new Set<string>();
       for (const w of tenants.rows) {
@@ -528,5 +629,7 @@ export async function startWorker() {
   }
   clearInterval(heartbeat);
 
+  await Promise.allSettled([newsJob, marketJob]);
+  await closeIntelligence();
   await pool.end();
 }
