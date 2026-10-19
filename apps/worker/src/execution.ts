@@ -1,10 +1,8 @@
+import { entitlements } from "../../api/src/platform.ts";
+import type { ExchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import type pg from "pg";
 import { Decimal } from "decimal.js";
-import {
-  BybitAdapter,
-  botConfig,
-  ExchangeError,
-} from "../../../packages/core/src/index.ts";
+import { botConfig, ExchangeError } from "../../../packages/core/src/index.ts";
 import { aiGate } from "../../../packages/ai-core/src/index.ts";
 import { portfolioSnapshot, lockPortfolio } from "../../api/src/portfolio.ts";
 import { orderEvent, terminal } from "./ledger.ts";
@@ -35,7 +33,7 @@ export async function dispatchIntent(
   db: pg.PoolClient,
   tid: string,
   id: string,
-  adapter: BybitAdapter,
+  adapter: ExchangeAdapter,
   runtime: ExecutionRuntime,
 ) {
   await lockPortfolio(db, tid);
@@ -74,6 +72,20 @@ export async function dispatchIntent(
     return false;
   }
   if (o.side === "Buy") {
+    const e = await entitlements(db, tid),
+      count = Number(
+        (
+          await db.query(
+            "SELECT count(*) AS n FROM bots WHERE tenant_id=$1 AND status<>'ARCHIVED'",
+            [tid],
+          )
+        ).rows[0].n,
+      );
+    if (count > e.limits.bots) {
+      await cancelInternal(db, tid, id, "SUBSCRIPTION_PLAN_LIMIT");
+      return false;
+    }
+
     if (o.ai_mode === "FILTER") {
       const a = (
         await db.query(
@@ -244,7 +256,7 @@ export async function managePending(
   db: pg.PoolClient,
   tid: string,
   botId: string,
-  adapter: BybitAdapter,
+  adapter: ExchangeAdapter,
   input: { now: number; stop: boolean; protectiveExit: boolean },
 ) {
   const orders = (

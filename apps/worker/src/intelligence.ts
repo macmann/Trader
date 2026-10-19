@@ -1,3 +1,4 @@
+import { consume } from "../../api/src/platform.ts";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { pool, tenant } from "../../api/src/db.ts";
@@ -259,7 +260,30 @@ export async function analyzeBot(
     };
     return { id: prior.id, outcome, gate: aiGate(mode, direction, outcome) };
   }
-  const outcome = await marketContext(input, provider, cacheOnly),
+  let quota = false;
+  try {
+    await consume(
+      db,
+      tenantId,
+      "ai",
+      `${botId}:${input.candleTime}:${inputHash}:${mode}`,
+    );
+  } catch (e) {
+    if ((e as Error).message !== "MONTHLY_QUOTA_EXCEEDED") throw e;
+    quota = true;
+  }
+  const outcome: ContextOutcome = quota
+      ? {
+          status: "FAILED",
+          result: null,
+          error: "AI_BUDGET_EXCEEDED",
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 30000,
+          contextId: null,
+          provider: provider?.id ?? "disabled",
+          model: provider?.model ?? "none",
+        }
+      : await marketContext(input, provider, cacheOnly),
     gate = aiGate(mode, direction, outcome),
     id = randomUUID();
   if (

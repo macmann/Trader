@@ -1,3 +1,7 @@
+import {
+  exchangeAdapter,
+  providers,
+} from "../../../packages/exchanges/src/index.ts";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
@@ -8,6 +12,8 @@ import { resolve, dirname } from "node:path";
 import { z, ZodError } from "zod";
 import { pool, tenant, audit } from "./db.ts";
 import { registerIntelligenceRoutes } from "./intelligence-routes.ts";
+import { registerPlatformRoutes } from "./platform-routes.ts";
+import { userContext, allowed, entitlements } from "./platform.ts";
 import { registerAdvancedRoutes } from "./advanced-routes.ts";
 import {
   symbolSchema,
@@ -24,7 +30,6 @@ import { AIError } from "../../../packages/ai-core/src/index.ts";
 import {
   botConfig,
   encrypt,
-  BybitAdapter,
   ExchangeError,
 } from "../../../packages/core/src/index.ts";
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -58,6 +63,7 @@ export const app = Fastify({
 await app.register(cookie);
 await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
 type Identity = {
+  role: string;
   userId: string;
   tenantId: string;
   email: string;
@@ -82,20 +88,34 @@ app.addHook("onRequest", async (req, reply) => {
   if (!req.routeOptions.url?.startsWith("/api/")) return;
   if (
     !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
-    req.headers.origin !== origin
+    req.headers.origin !== origin &&
+    req.routeOptions.url !== "/api/billing/gateway"
   )
     return reply.code(403).send({ error: "ORIGIN_REJECTED" });
   const token = req.cookies.session;
   if (token) {
     const r = await pool.query(
-      "SELECT s.*,u.email,u.verified,w.id AS tenant_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.owner_id=u.id WHERE token_hash=$1 AND expires_at>now()",
+      "SELECT s.*,u.email,u.verified,w.id AS tenant_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN workspaces w ON w.owner_id=u.id AND w.kind='PERSONAL' WHERE token_hash=$1 AND expires_at>now()",
       [digest(token)],
     );
     if (r.rows[0]) {
       const v = r.rows[0];
+      const membership = await userContext(
+        v.user_id,
+        async (db) =>
+          (
+            await db.query(
+              "SELECT tenant_id,role FROM workspace_members WHERE user_id=$1 ORDER BY (tenant_id=$2) DESC,(tenant_id=$3) DESC LIMIT 1",
+              [v.user_id, v.active_tenant_id ?? v.tenant_id, v.tenant_id],
+            )
+          ).rows[0],
+      );
+      if (!membership)
+        return reply.code(401).send({ error: "WORKSPACE_ACCESS_REVOKED" });
       req.identity = {
+        role: membership.role,
         userId: v.user_id,
-        tenantId: v.tenant_id,
+        tenantId: membership.tenant_id,
         email: v.email,
         verified: v.verified,
         token,
@@ -106,6 +126,7 @@ app.addHook("onRequest", async (req, reply) => {
   }
   const publicPaths = [
     "/api/health",
+    "/api/billing/gateway",
     "/api/auth/register",
     "/api/auth/login",
     "/api/auth/verify",
@@ -120,6 +141,8 @@ app.addHook("onRequest", async (req, reply) => {
     req.headers["x-csrf-token"] !== req.identity.csrf
   )
     return reply.code(403).send({ error: "CSRF_REJECTED" });
+  if (!allowed(req.identity.role, req.method, req.routeOptions.url ?? ""))
+    return reply.code(403).send({ error: "ROLE_FORBIDDEN" });
   if (!req.routeOptions.url?.startsWith("/api/auth/") && !req.identity.verified)
     return reply.code(403).send({ error: "EMAIL_VERIFICATION_REQUIRED" });
 });
@@ -135,6 +158,14 @@ app.setErrorHandler((err, req, reply) => {
   const e = err as { code?: string; statusCode?: number };
   if (e.code === "23505")
     return reply.code(409).send({ error: "ALREADY_EXISTS" });
+  if (
+    ["CONNECTION_PLAN_LIMIT", "MONTHLY_QUOTA_EXCEEDED"].includes(
+      (err as Error).message,
+    )
+  )
+    return reply
+      .code(e.statusCode ?? 409)
+      .send({ error: (err as Error).message });
   if (e.statusCode && e.statusCode < 500)
     return reply.code(e.statusCode).send({ error: "REQUEST_REJECTED" });
   req.log.error(
@@ -227,6 +258,8 @@ app.post(
   },
 );
 app.get("/api/auth/me", async (req) => ({
+  role: req.identity!.role,
+  tenantId: req.identity!.tenantId,
   email: req.identity!.email,
   verified: req.identity!.verified,
   csrf: req.identity!.csrf,
@@ -354,6 +387,7 @@ app.get(
 function recent(req: { identity: Identity | null }) {
   return Date.now() - req.identity!.reauthenticatedAt.getTime() < 300000;
 }
+app.get("/api/exchanges", async () => ({ providers }));
 app.get("/api/connections", async (req) =>
   tenant(
     req.identity!.tenantId,
@@ -371,6 +405,8 @@ app.post("/api/connections", async (req, reply) => {
     return reply.code(403).send({ error: "REAUTHENTICATION_REQUIRED" });
   const v = z
     .object({
+      provider: z.enum(["BYBIT", "OKX"]).default("BYBIT"),
+      passphrase: z.string().min(1).max(256).optional(),
       name: z.string().min(1).max(80),
       environment: z.enum(["TESTNET", "LIVE"]),
       apiKey: z.string().min(8).max(256),
@@ -381,25 +417,45 @@ app.post("/api/connections", async (req, reply) => {
     return reply
       .code(403)
       .send({ error: "LIVE_CONNECTIONS_DISABLED_IN_MVP_PREVIEW" });
-  const adapter = new BybitAdapter(v.environment, v),
+  if (v.provider === "OKX" && !v.passphrase)
+    return reply.code(400).send({ error: "PASSPHRASE_REQUIRED" });
+  const adapter = exchangeAdapter(v.provider, v.environment, v),
     permissions = await adapter.validateCredentials(),
     id = randomUUID(),
     tid = req.identity!.tenantId;
   await tenant(tid, async (db) => {
+    await lockPortfolio(db, tid);
+    const e = await entitlements(db, tid);
+    if (
+      Number(
+        (
+          await db.query(
+            "SELECT count(*) AS n FROM exchange_connections WHERE tenant_id=$1 AND status<>'DISCONNECTED'",
+            [tid],
+          )
+        ).rows[0].n,
+      ) >= e.limits.connections
+    )
+      throw Object.assign(Error("CONNECTION_PLAN_LIMIT"), { statusCode: 409 });
     await db.query(
-      "INSERT INTO exchange_connections(id,tenant_id,name,environment,credentials,status,permissions) VALUES($1,$2,$3,$4,$5,$6,$7)",
+      "INSERT INTO exchange_connections(id,tenant_id,name,environment,credentials,status,permissions,provider) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
       [
         id,
         tid,
         v.name,
         v.environment,
         encrypt(
-          { apiKey: v.apiKey, apiSecret: v.apiSecret },
+          {
+            apiKey: v.apiKey,
+            apiSecret: v.apiSecret,
+            ...(v.provider === "OKX" ? { passphrase: v.passphrase } : {}),
+          },
           process.env.APP_ENCRYPTION_KEY!,
           `${tid}:${id}:${v.environment}`,
         ),
         "CONNECTED",
         JSON.stringify(permissions),
+        v.provider,
       ],
     );
     await audit(db, tid, "EXCHANGE_CONNECTED", {
@@ -459,6 +515,7 @@ app.post("/api/bots", async (req, reply) => {
   const v = z
       .strictObject({
         name: z.string().min(1).max(80),
+        marketplaceVersionId: z.uuid().optional(),
         connectionId: z.uuid(),
         config: botConfig,
         symbol: symbolSchema.default("BTCUSDT"),
@@ -470,6 +527,32 @@ app.post("/api/bots", async (req, reply) => {
     id = randomUUID();
   return tenant(tid, async (db) => {
     await lockPortfolio(db, tid);
+    if (v.marketplaceVersionId) {
+      const version = (
+        await db.query(
+          "SELECT v.* FROM marketplace_versions v JOIN strategy_subscriptions s ON s.version_id=v.id AND s.tenant_id=$1 WHERE v.id=$2",
+          [tid, v.marketplaceVersionId],
+        )
+      ).rows[0];
+      if (!version)
+        return reply.code(404).send({ error: "SUBSCRIBED_VERSION_REQUIRED" });
+      v.config = version.config;
+      v.advancedConfig = version.advanced_config;
+      v.strategyVersion = version.strategy_version;
+      v.symbol = version.symbol;
+    }
+    const entitlement = await entitlements(db, tid);
+    if (
+      Number(
+        (
+          await db.query(
+            "SELECT count(*) AS n FROM bots WHERE tenant_id=$1 AND status<>'ARCHIVED'",
+            [tid],
+          )
+        ).rows[0].n,
+      ) >= entitlement.limits.bots
+    )
+      return reply.code(409).send({ error: "BOT_PLAN_LIMIT" });
     const invalid = configurationVeto(v.strategyVersion, v.advancedConfig);
     if (invalid) return reply.code(400).send({ error: invalid });
     const reasons = allocationReasons(
@@ -491,7 +574,7 @@ app.post("/api/bots", async (req, reply) => {
         .code(400)
         .send({ error: "CONNECTED_TESTNET_EXCHANGE_REQUIRED" });
     await db.query(
-      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
       [
         id,
         tid,
@@ -501,6 +584,7 @@ app.post("/api/bots", async (req, reply) => {
         v.symbol,
         v.strategyVersion,
         JSON.stringify(v.advancedConfig),
+        v.marketplaceVersionId ?? null,
       ],
     );
     await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [
@@ -563,11 +647,24 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
         ).rows,
     ),
   );
+registerPlatformRoutes(app);
 registerIntelligenceRoutes(app);
 registerAdvancedRoutes(app);
 const web = resolve(import.meta.dirname, "../../web/dist");
 if (await stat(web).catch(() => null)) {
   const files = new Set(await readdir(resolve(web, "assets")));
+  for (const [path, type] of [
+    ["manifest.webmanifest", "application/manifest+json"],
+    ["sw.js", "text/javascript"],
+    ["icon.svg", "image/svg+xml"],
+    ["offline.html", "text/html"],
+  ])
+    app.get("/" + path, async (_req, reply) =>
+      reply
+        .header("Cache-Control", "no-cache")
+        .type(type)
+        .send(await readFile(resolve(web, path))),
+    );
   app.get("/", async (_req, reply) =>
     reply.type("text/html").send(await readFile(resolve(web, "index.html"))),
   );

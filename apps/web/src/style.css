@@ -666,3 +666,74 @@ label small {
 .preview-result p {
   color: #a8bed1;
 }
+.platform-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.platform-tabs .selected {
+  background: #1c5046;
+  color: #a4ffe0;
+}
+.platform .panel {
+  margin-bottom: 20px;
+}
+.platform-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #263748;
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.platform textarea {
+  width: 100%;
+  background: #101e2a;
+  color: #d8e7f1;
+  border: 1px solid #304b61;
+  border-radius: 6px;
+  padding: 10px;
+}
+.equity-chart {
+  width: 100%;
+  max-height: 180px;
+  margin-top: 18px;
+}
+.platform .actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.platform form > button {
+  margin-top: 12px;
+}
+.platform input[type="checkbox"] {
+  width: auto;
+  margin-right: 8px;
+}
+.platform small {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .platform-row {
+    flex-wrap: wrap;
+  }
+  .platform .comparison-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.platform .config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+.platform .panel > form {
+  max-width: 100%;
+}
+.platform-tabs {
+  position: static;
+}

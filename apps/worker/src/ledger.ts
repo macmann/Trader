@@ -1,7 +1,7 @@
+import type { ExchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import type pg from "pg";
-import { BybitAdapter } from "../../../packages/core/src/index.ts";
 export const terminal = ["Filled", "Cancelled", "Rejected", "Deactivated"];
 export async function orderEvent(
   db: pg.PoolClient,
@@ -166,7 +166,7 @@ export async function reconcile(
   db: pg.PoolClient,
   tid: string,
   connectionId: string,
-  adapter: BybitAdapter,
+  adapter: ExchangeAdapter,
 ) {
   const connection = (
     await db.query(
@@ -204,21 +204,31 @@ export async function reconcile(
     ),
   ]);
   const byClient = new Map(ours.map((o) => [o.client_id, o]));
+  const byExchange = new Map(
+    ours.filter((o) => o.exchange_id).map((o) => [o.exchange_id, o]),
+  );
+  const remoteOrders = new Map<string, any>();
+  for (const order of unfinished) {
+    const result = await adapter.getOrder(order.client_id, order.symbol);
+    const remote = result.list?.[0];
+    remoteOrders.set(order.id, remote);
+    if (remote?.orderId) byExchange.set(remote.orderId, order);
+  }
   for (const remote of open)
-    if (!byClient.has(remote.orderLinkId))
+    if (!byClient.has(remote.orderLinkId) && !byExchange.has(remote.orderId))
       throw Error("UNEXPECTED_EXCHANGE_ORDER");
   for (const fill of [...fills].sort(
     (a, b) =>
       Number(a.execTime) - Number(b.execTime) ||
       String(a.execId).localeCompare(String(b.execId)),
   )) {
-    const order = byClient.get(fill.orderLinkId);
+    const order =
+      byClient.get(fill.orderLinkId) ?? byExchange.get(fill.orderId);
     if (order) await applyFill(db, tid, order, fill);
   }
   let ready = true;
   for (const order of unfinished) {
-    const result = await adapter.getOrder(order.client_id),
-      remote = result.list?.[0];
+    const remote = remoteOrders.get(order.id);
     if (!remote) {
       ready = false;
       await db.query(
