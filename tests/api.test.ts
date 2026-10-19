@@ -753,3 +753,59 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
     "0",
   );
 });
+test("failed transactional mail revokes links and password reset does not reveal registered emails", async () => {
+  const a = await account(),
+    savedFetch = globalThis.fetch;
+  const saved = {
+    MAIL_MODE: process.env.MAIL_MODE,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    MAIL_FROM: process.env.MAIL_FROM,
+  };
+  process.env.MAIL_MODE = "resend";
+  process.env.RESEND_API_KEY = "fixture-key-only";
+  process.env.MAIL_FROM = "accounts@example.com";
+  globalThis.fetch = (async () =>
+    new Response("private-provider-error", { status: 503 })) as typeof fetch;
+  try {
+    const resend = await app.inject({
+      url: "/api/auth/resend-verification",
+      method: "POST",
+      headers: a.headers,
+      payload: {},
+    });
+    assert.equal(resend.statusCode, 503);
+    const registered = await app.inject({
+        url: "/api/auth/reset-request",
+        method: "POST",
+        headers: { origin },
+        payload: { email: a.email },
+      }),
+      unknown = await app.inject({
+        url: "/api/auth/reset-request",
+        method: "POST",
+        headers: { origin },
+        payload: { email: "absent-" + randomUUID() + "@example.com" },
+      });
+    assert.equal(registered.statusCode, 200, registered.body);
+    assert.equal(unknown.statusCode, 200, unknown.body);
+    assert.deepEqual(registered.json(), unknown.json());
+    assert.equal(
+      Number(
+        (
+          await admin.query(
+            "SELECT count(*) AS n FROM auth_tokens WHERE user_id=$1",
+            [a.userId],
+          )
+        ).rows[0].n,
+      ),
+      0,
+    );
+    assert.ok(!resend.body.includes("private-provider-error"));
+  } finally {
+    globalThis.fetch = savedFetch;
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});

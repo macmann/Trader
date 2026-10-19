@@ -1,0 +1,113 @@
+x-build: &build
+  context: .
+  dockerfile: Dockerfile
+  target: runtime
+x-runtime-environment: &runtime-environment
+  NODE_ENV: production
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGDATABASE: trader
+  PGUSER: trader_app
+  PGPASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD to a strong password of at least 32 characters}
+  APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY to a permanent 64-character hex key}
+  TRADING_EXECUTION_ENABLED: "false"
+  LIVE_TRADING_PLATFORM_ENABLED: "false"
+  AI_PROVIDER: ${AI_PROVIDER:-disabled}
+  AI_MODEL: ${AI_MODEL:-}
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_MAX_CALLS_PER_DAY: ${AI_MAX_CALLS_PER_DAY:-100}
+  NEWS_ENABLED: ${NEWS_ENABLED:-false}
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a strong database administrator password}
+      POSTGRES_DB: trader
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader_admin -d trader"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  migrate:
+    build: *build
+    init: true
+    restart: "no"
+    command:
+      [
+        "node",
+        "--use-env-proxy",
+        "--import",
+        "tsx",
+        "scripts/deploy-migrate.ts",
+      ]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: trader
+      PGUSER: trader_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+  web:
+    build: *build
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    stop_grace_period: 60s
+    environment:
+      <<: *runtime-environment
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to your HTTPS domain without a trailing slash}
+      PORT: "3000"
+      MAIL_MODE: resend
+      MAIL_FROM: ${MAIL_FROM:?Set MAIL_FROM to an address on your verified Resend domain}
+      RESEND_API_KEY: ${RESEND_API_KEY:?Set RESEND_API_KEY}
+      TELEGRAM_NOTIFICATIONS_CONFIGURED: ${TELEGRAM_BOT_TOKEN:+true}
+      BILLING_WEBHOOK_SECRET: ${BILLING_WEBHOOK_SECRET:-}
+    expose: ["3000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+  worker:
+    build: *build
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    stop_grace_period: 60s
+    command:
+      ["node", "--use-env-proxy", "--import", "tsx", "apps/worker/src/index.ts"]
+    environment:
+      <<: *runtime-environment
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "--import",
+          "tsx",
+          "scripts/container-health.ts",
+          "worker",
+        ]
+      interval: 30s
+      timeout: 8s
+      start_period: 60s
+      retries: 4
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+volumes:
+  postgres-data:

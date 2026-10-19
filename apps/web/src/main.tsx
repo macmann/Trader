@@ -192,10 +192,7 @@ function App() {
                 password: f.get("password"),
               });
               if (authMode === "register") {
-                setNotice(
-                  r.message +
-                    " Development emails are written to .local/mail.jsonl on the server.",
-                );
+                setNotice(r.message);
                 setAuthMode("login");
               } else {
                 csrf = r.csrf;
@@ -355,10 +352,7 @@ function App() {
           {!user.verified ? (
             <section className="panel">
               <h2>Verify your email to continue</h2>
-              <p>
-                Open the verification link in your email. Development messages
-                are stored in the server’s .local/mail.jsonl outbox.
-              </p>
+              <p>Open the verification link in your email, then sign in.</p>
               <button
                 onClick={() =>
                   void run(async () => {

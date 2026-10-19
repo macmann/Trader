@@ -17,7 +17,10 @@
     "build": "npm run typecheck && npm run build -w @trader/web",
     "setup": "tsx scripts/setup.ts",
     "format": "prettier --write apps packages scripts tests docs README.md",
-    "testnet:preflight": "node --use-env-proxy --import tsx --env-file=.env scripts/testnet-preflight.ts"
+    "testnet:preflight": "node --use-env-proxy --import tsx --env-file=.env scripts/testnet-preflight.ts",
+    "start": "node --use-env-proxy --import tsx apps/api/src/server.ts",
+    "start:worker": "node --use-env-proxy --import tsx apps/worker/src/index.ts",
+    "deploy:migrate": "node --use-env-proxy --import tsx scripts/deploy-migrate.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -25,12 +28,12 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "prettier": "^3.9.10",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",
     "pg": "^8.16.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "tsx": "^4.20.0"
   }
 }

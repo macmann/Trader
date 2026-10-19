@@ -719,7 +719,9 @@ export function registerPlatformRoutes(app: FastifyInstance) {
   );
   app.get("/api/notifications/settings", async (req) =>
     tenant(req.identity!.tenantId, async (db) => ({
-      telegramConfigured: !!process.env.TELEGRAM_BOT_TOKEN,
+      telegramConfigured:
+        !!process.env.TELEGRAM_BOT_TOKEN ||
+        process.env.TELEGRAM_NOTIFICATIONS_CONFIGURED === "true",
       ...(
         await db.query(
           "SELECT enabled,telegram_chat_id FROM notification_settings WHERE tenant_id=$1",
