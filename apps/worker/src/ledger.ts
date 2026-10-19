@@ -2,7 +2,13 @@ import type { ExchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import type pg from "pg";
-export const terminal = ["Filled", "Cancelled", "Rejected", "Deactivated"];
+export const terminal = [
+  "Filled",
+  "Cancelled",
+  "Rejected",
+  "Deactivated",
+  "PartiallyFilledCanceled",
+];
 export async function orderEvent(
   db: pg.PoolClient,
   tid: string,
@@ -22,9 +28,12 @@ async function pages(load: (cursor?: string) => Promise<any>) {
   const seen = new Set<string>();
   for (let i = 0; i < 100; i++) {
     const response = await load(cursor);
-    list.push(...(response.list ?? []));
+    if (!response || !Array.isArray(response.list))
+      throw Error("INVALID_RECONCILIATION_PAGE");
+    list.push(...response.list);
     const next = response.nextPageCursor;
-    if (!next) return list;
+    if (next === undefined || next === null || next === "") return list;
+    if (typeof next !== "string") throw Error("INVALID_RECONCILIATION_CURSOR");
     if (seen.has(next)) throw Error("PAGINATED_HISTORY_CURSOR_REPEATED");
     seen.add(next);
     cursor = next;
@@ -37,6 +46,24 @@ async function applyFill(
   order: any,
   fill: any,
 ) {
+  if (
+    !fill ||
+    typeof fill.execId !== "string" ||
+    !fill.execId ||
+    fill.execId.length > 200 ||
+    fill.execTime === null ||
+    fill.execTime === "" ||
+    !Number.isSafeInteger(Number(fill.execTime)) ||
+    Number(fill.execTime) < 0 ||
+    Number(fill.execTime) > Date.now() + 300000
+  )
+    throw Error("INVALID_EXECUTION_ID_OR_TIME");
+  if (fill.symbol !== undefined && fill.symbol !== order.symbol)
+    throw Error("EXECUTION_SYMBOL_MISMATCH");
+  if (fill.side !== undefined && fill.side !== order.side)
+    throw Error("EXECUTION_SIDE_MISMATCH");
+  if (fill.execType !== undefined && fill.execType !== "Trade")
+    throw Error("UNSUPPORTED_EXECUTION_TYPE");
   const q = new Decimal(fill.execQty),
     price = new Decimal(fill.execPrice),
     fee = new Decimal(fill.execFee ?? 0),
@@ -48,6 +75,8 @@ async function applyFill(
     fee.lt(0)
   )
     throw Error("INVALID_EXCHANGE_FILL");
+  if (fee.gt(0) && (typeof fill.feeCurrency !== "string" || !fill.feeCurrency))
+    throw Error("FEE_CURRENCY_REQUIRED");
   const currency = fill.feeCurrency ?? "USDT";
   if (!["USDT", base].includes(currency))
     throw Error("UNSUPPORTED_FEE_CURRENCY");
@@ -70,7 +99,25 @@ async function applyFill(
       order.side === "Buy" ? netQ.toFixed() : netQ.neg().toFixed(),
     ],
   );
-  if (!inserted.rowCount) return;
+  if (!inserted.rowCount) {
+    const prior = (
+      await db.query("SELECT * FROM executions WHERE tenant_id=$1 AND id=$2", [
+        tid,
+        fill.execId,
+      ])
+    ).rows[0];
+    if (
+      !prior ||
+      prior.order_id !== order.id ||
+      !new Decimal(prior.quantity).eq(q) ||
+      !new Decimal(prior.price).eq(price) ||
+      !new Decimal(prior.fee_amount).eq(fee) ||
+      prior.fee_currency !== currency ||
+      prior.executed_at.getTime() !== Number(fill.execTime)
+    )
+      throw Error("EXECUTION_ID_CONFLICT");
+    return;
+  }
   const cumulative = new Decimal(
     (
       await db.query(
@@ -211,6 +258,17 @@ export async function reconcile(
   for (const order of unfinished) {
     const result = await adapter.getOrder(order.client_id, order.symbol);
     const remote = result.list?.[0];
+    if (remote) {
+      if (
+        typeof remote.orderId !== "string" ||
+        !remote.orderId ||
+        (remote.orderLinkId !== undefined &&
+          remote.orderLinkId !== order.client_id) ||
+        (order.exchange_id && order.exchange_id !== remote.orderId) ||
+        (remote.symbol !== undefined && remote.symbol !== order.symbol)
+      )
+        throw Error("EXCHANGE_ORDER_IDENTITY_MISMATCH");
+    }
     remoteOrders.set(order.id, remote);
     if (remote?.orderId) byExchange.set(remote.orderId, order);
   }
@@ -224,7 +282,18 @@ export async function reconcile(
   )) {
     const order =
       byClient.get(fill.orderLinkId) ?? byExchange.get(fill.orderId);
-    if (order) await applyFill(db, tid, order, fill);
+    if (!order) throw Error("UNEXPECTED_EXCHANGE_EXECUTION");
+    if (
+      (fill.orderLinkId && fill.orderLinkId !== order.client_id) ||
+      (fill.orderId &&
+        ((order.exchange_id && order.exchange_id !== fill.orderId) ||
+          (remoteOrders.get(order.id)?.orderId &&
+            remoteOrders.get(order.id).orderId !== fill.orderId) ||
+          (byExchange.get(fill.orderId) &&
+            byExchange.get(fill.orderId).id !== order.id)))
+    )
+      throw Error("EXECUTION_ORDER_IDENTITY_MISMATCH");
+    await applyFill(db, tid, order, fill);
   }
   let ready = true;
   for (const order of unfinished) {
@@ -252,12 +321,28 @@ export async function reconcile(
           ? new Decimal(order.quantity)
           : null
         : new Decimal(remote.cumExecQty);
-    const state =
-      terminal.includes(remote.orderStatus) &&
-      (!expected || !applied.eq(expected))
+    if (
+      expected &&
+      (!expected.isFinite() ||
+        expected.lt(0) ||
+        expected.gt(order.quantity) ||
+        (remote.orderStatus === "Filled" && !expected.eq(order.quantity)))
+    )
+      throw Error("INVALID_TERMINAL_QUANTITY");
+    const known = [
+      ...terminal,
+      "New",
+      "PartiallyFilled",
+      "Untriggered",
+      "Triggered",
+    ];
+    const state = !known.includes(remote.orderStatus)
+      ? "UNKNOWN"
+      : terminal.includes(remote.orderStatus) &&
+          (!expected || !applied.eq(expected))
         ? "RECONCILING"
         : remote.orderStatus;
-    if (state === "RECONCILING") ready = false;
+    if (state === "RECONCILING" || state === "UNKNOWN") ready = false;
     await db.query(
       "UPDATE orders SET state=$1,exchange_id=$2,updated_at=now() WHERE tenant_id=$3 AND id=$4",
       [state, remote.orderId, tid, order.id],

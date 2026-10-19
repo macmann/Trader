@@ -11,12 +11,12 @@
 
 ## Required before calling Phase 1 complete
 
-1. Process Bybit private order/execution events directly, maintain reconnect state, and reconcile complete REST pagination with durable watermarks. Account for base-asset and other fee currencies.
-2. Add a complete trade/P&L ledger, daily realized/unrealized losses, peak-equity drawdown, consecutive-loss limits, account-wide allocation reservations, and exchange-minimum/max-quantity checks.
-3. Implement exchange-native protective orders or an explicitly verified protective-order workflow. Specify and implement pause/stop/cancel/flatten semantics with continued monitoring of existing exposure.
-4. Add durable job recovery, complete order-state events, graceful recovery from ambiguous acknowledgements, and multi-worker concurrency/crash fault-injection tests.
+1. Private-stream subscription readiness, reconnect invalidation and in-flight account-change fencing are implemented. Complete direct authoritative private order/execution processing remains pending; REST pagination, durable watermarks and base/quote fee accounting are implemented and locally tested.
+2. Portfolio reservations, instrument limits, closed-cycle results and observed peak-equity drawdown are implemented. Precise midnight equity/daily realized-unrealized accounting and unsupported fee handling still require production acceptance.
+3. Implement and externally verify exchange-native protective orders. Stop cancels pending entries without flattening; Pause blocks new entries while retaining software exits; stopped inventory has no protective monitoring. These boundaries need real exchange/outage verification.
+4. Durable intents, committed attempted-send markers, lifecycle events, ambiguous-acknowledgement reconciliation and multi-worker fault tests are implemented. Verify those behaviors against actual Testnet restarts, outages and partial fills.
 5. Integrate production email delivery, production configuration/key rotation, security hardening, and live acknowledgement/re-authentication controls. Live connections stay disabled until then.
-6. Verify two independent real Bybit Testnet accounts through the checks below. This requires working external network access and user-supplied Testnet credentials in the app.
+6. Verify two independent real Bybit Testnet accounts through the checks below. This requires working external network access and user-supplied Testnet credentials in the app. See [the read-only preflight and evidence runbook](testnet-acceptance.md).
 
 ## External Testnet acceptance checklist (not yet run)
 

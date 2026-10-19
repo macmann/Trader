@@ -479,7 +479,7 @@ app.delete("/api/connections/:id", async (req, reply) => {
     if (!r.rowCount) return reply.code(404).send({ error: "NOT_FOUND" });
     const exposed = (
       await db.query(
-        "SELECT 1 FROM bots b LEFT JOIN positions p ON p.bot_id=b.id WHERE b.connection_id=$1 AND b.tenant_id=$2 AND (COALESCE(p.quantity,0)>0 OR EXISTS(SELECT 1 FROM orders o WHERE o.bot_id=b.id AND o.tenant_id=b.tenant_id AND o.state NOT IN ('Filled','Cancelled','Rejected','Deactivated','FILLED','CANCELLED','REJECTED'))) LIMIT 1",
+        "SELECT 1 FROM bots b LEFT JOIN positions p ON p.bot_id=b.id WHERE b.connection_id=$1 AND b.tenant_id=$2 AND (COALESCE(p.quantity,0)>0 OR EXISTS(SELECT 1 FROM orders o WHERE o.bot_id=b.id AND o.tenant_id=b.tenant_id AND o.state NOT IN ('Filled','Cancelled','Rejected','Deactivated','PartiallyFilledCanceled','FILLED','CANCELLED','REJECTED'))) LIMIT 1",
         [id, tid],
       )
     ).rowCount;

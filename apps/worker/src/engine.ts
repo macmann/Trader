@@ -1,3 +1,4 @@
+import { PrivateFeedState } from "./private-state.ts";
 import { paperCycle } from "./paper.ts";
 import {
   exchangeAdapter,
@@ -48,7 +49,6 @@ import {
   decrypt,
   risk,
   quantize,
-  type Credentials,
 } from "../../../packages/core/src/index.ts";
 const key = process.env.APP_ENCRYPTION_KEY!;
 if (!key?.match(/^[a-f0-9]{64}$/i))
@@ -57,9 +57,7 @@ const feeds = new Map<
   string,
   {
     socket: WebSocket;
-    authenticated: boolean;
-    lastMessage: number;
-    credentials: Credentials;
+    state: PrivateFeedState;
     provider: string;
   }
 >();
@@ -155,9 +153,7 @@ function privateFeed(
   );
   feed = {
     socket,
-    authenticated: false,
-    lastMessage: 0,
-    credentials,
+    state: new PrivateFeedState(provider as "BYBIT" | "OKX"),
     provider,
   };
   feeds.set(id, feed);
@@ -197,42 +193,34 @@ function privateFeed(
     );
   });
   socket.on("message", (data) => {
-    try {
-      if (provider === "OKX" && data.toString() === "pong") {
-        current.lastMessage = Date.now();
-        return;
-      }
-      const m = JSON.parse(data.toString());
-      if (provider === "OKX" && m.event === "login") {
-        current.authenticated = m.code === "0";
-        if (current.authenticated)
-          socket.send(
-            JSON.stringify({
-              op: "subscribe",
-              args: [
-                { channel: "orders", instType: "SPOT" },
-                { channel: "account" },
-              ],
-            }),
-          );
-      }
-      if (m.op === "auth" && m.success) {
-        current.authenticated = true;
-        socket.send(
-          JSON.stringify({
-            op: "subscribe",
-            args: ["order", "execution", "wallet"],
-          }),
-        );
-      }
-      current.lastMessage = Date.now();
-    } catch {
-      current.authenticated = false;
-    }
+    const result = current.state.receive(data.toString());
+    if (result === "AUTHENTICATED")
+      socket.send(
+        JSON.stringify(
+          provider === "OKX"
+            ? {
+                op: "subscribe",
+                args: [
+                  { channel: "orders", instType: "SPOT" },
+                  { channel: "account" },
+                ],
+              }
+            : {
+                op: "subscribe",
+                req_id: "private-subscriptions",
+                args: ["order", "execution", "wallet"],
+              },
+        ),
+      );
+    if (current.state.failed) socket.close();
   });
-  socket.on("error", () => socket.close());
+  socket.on("error", () => {
+    current.state.invalidate();
+    socket.close();
+  });
   socket.on("close", () => {
-    feeds.delete(id);
+    current.state.invalidate();
+    if (feeds.get(id) === current) feeds.delete(id);
   });
   return current;
 }
@@ -300,13 +288,15 @@ export async function tick(
             ),
             row.provider,
           );
+      const accountRevision = feed?.state.revision;
       const runtime: ExecutionRuntime = {
         executionEnabled:
           override?.executionEnabled ??
           process.env.TRADING_EXECUTION_ENABLED === "true",
         privateReady:
           override?.privateReady ??
-          (!!feed?.authenticated && clock() - (feed?.lastMessage ?? 0) < 45000),
+          (!!feed?.state.ready(clock()) &&
+            feed.socket.readyState === WebSocket.OPEN),
         marketReceivedAt:
           override?.marketReceivedAt ??
           market.get(row.provider + ":" + row.symbol) ??
@@ -315,9 +305,9 @@ export async function tick(
         isPrivateReady: () =>
           override
             ? override.privateReady
-            : !!feed?.authenticated &&
+            : !!feed?.state.ready(clock()) &&
               feed.socket.readyState === WebSocket.OPEN &&
-              clock() - feed.lastMessage < 45000,
+              feed.state.revision === accountRevision,
         marketTime: () =>
           override?.marketReceivedAt ??
           market.get(row.provider + ":" + row.symbol) ??

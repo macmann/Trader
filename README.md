@@ -55,3 +55,5 @@ Phase 2 AI contracts, adapters, cache, history, news, and dashboard are implemen
 Phase 3 adds multi-pair strategy/configuration and Portfolio controls. Trend, Breakout, Limit, bounded DCA and accumulation-grid paths have worker integration and simulated exchange tests. See [Phase 3 execution and remaining release requirements](docs/phase-3.md).
 
 Phases 4–5 add organization roles, plan quotas and a signed billing gateway, OKX Demo, Gemini/DeepSeek, in-app/optional Telegram notifications, PWA assets, historical and walk-forward research, independent paper sessions and a versioned strategy marketplace. Open **Platform** in the dashboard. See [Phases 4–5 workflows and integration boundaries](docs/phase-4-5.md). Payment collection, externally accepted integrations and live trading remain disabled/unverified.
+
+Run `npm run testnet:preflight` for a read-only, sanitized readiness report. It never submits orders and cannot certify external acceptance. See [Testnet acceptance and reliability](docs/testnet-acceptance.md).

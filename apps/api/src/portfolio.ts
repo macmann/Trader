@@ -8,6 +8,7 @@ export const terminalStates = [
   "Cancelled",
   "Rejected",
   "Deactivated",
+  "PartiallyFilledCanceled",
   "FILLED",
   "CANCELLED",
   "REJECTED",

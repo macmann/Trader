@@ -602,3 +602,131 @@ test("OKX Demo worker reconciles an acknowledgement loss using exchange-only fil
   assert.ok(Number(state.position.quantity) > 0);
   assert.equal(state.position.entry_count, 1);
 });
+test("malformed reconciliation pages and unknown external fills cannot authorize execution", async () => {
+  const f = await fixture();
+  f.broker.getOpenOrders = async () => ({}) as any;
+  await assert.rejects(run(f), /INVALID_RECONCILIATION_PAGE/);
+  assert.equal(f.broker.creates, 0);
+  f.broker.getOpenOrders = async () => ({ list: [] });
+  f.broker.getExecutions = async () => ({
+    list: [{ execId: "untracked", orderLinkId: "someone-else" }],
+  });
+  await assert.rejects(run(f), /UNEXPECTED_EXCHANGE_EXECUTION/);
+  assert.equal(f.broker.creates, 0);
+});
+test("unknown order states retain allocation and lock new entries", async () => {
+  const f = await fixture("dca-v1.0", { entryType: "LIMIT" });
+  await run(f);
+  const o = (await rows(f)).orders[0];
+  f.broker.orders.get(o.client_id).orderStatus = "UNDOCUMENTED_STATE";
+  await run(f);
+  const state = await rows(f);
+  assert.equal(state.orders[0].state, "UNKNOWN");
+  assert.equal(state.portfolio.reserved, 20);
+  assert.equal(f.broker.creates, 1);
+});
+test("partial-fill cancellation releases only the pending reservation after matching executions", async () => {
+  const f = await fixture("dca-v1.0", { entryType: "LIMIT" });
+  await run(f);
+  const o = (await rows(f)).orders[0];
+  f.broker.fill(o.client_id, new Decimal(o.quantity).div(2).toFixed());
+  f.broker.orders.get(o.client_id).orderStatus = "PartiallyFilledCanceled";
+  assert.equal(
+    await tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker)),
+    true,
+  );
+  const state = await rows(f);
+  assert.equal(state.orders[0].state, "PartiallyFilledCanceled");
+  assert.equal(state.portfolio.reserved, 0);
+  assert.ok(Number(state.position.quantity) > 0);
+});
+test("a changed duplicate execution ID rolls back instead of silently changing financial history", async () => {
+  const f = await fixture();
+  await run(f);
+  await run(f);
+  const before = await rows(f),
+    fill = f.broker.fills[0];
+  fill.execPrice = String(Number(fill.execPrice) + 1);
+  await assert.rejects(
+    tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker)),
+    /EXECUTION_ID_CONFLICT/,
+  );
+  const after = await rows(f);
+  assert.equal(after.position.quantity, before.position.quantity);
+  assert.equal(after.position.cost, before.position.cost);
+});
+test("missing fee currency, contradictory order identity and impossible fill totals fail closed", async () => {
+  for (const scenario of ["currency", "identity", "quantity"]) {
+    const f = await fixture();
+    await run(f);
+    const original = f.broker.getOrder.bind(f.broker);
+    if (scenario === "currency") delete f.broker.fills[0].feeCurrency;
+    else
+      f.broker.getOrder = async (id: string) => {
+        const r = await original(id);
+        return {
+          list: r.list.map((o: any) => ({
+            ...o,
+            ...(scenario === "identity"
+              ? { orderLinkId: "different-client" }
+              : { cumExecQty: "999999" }),
+          })),
+        };
+      };
+    await assert.rejects(
+      tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker)),
+      scenario === "currency"
+        ? /FEE_CURRENCY_REQUIRED/
+        : scenario === "identity"
+          ? /EXCHANGE_ORDER_IDENTITY_MISMATCH/
+          : /INVALID_TERMINAL_QUANTITY/,
+    );
+    assert.equal(Number((await rows(f)).position.quantity), 0);
+  }
+});
+test("losing private-feed readiness after the committed submission marker prevents the network send", async () => {
+  const f = await fixture();
+  const runtime = {
+    adapter: f.broker,
+    privateReady: true,
+    marketReceivedAt: Date.now(),
+    executionEnabled: true,
+    afterSubmitting: async () => {
+      runtime.privateReady = false;
+    },
+  };
+  await tick(f.tid, f.bid, runtime);
+  assert.equal(f.broker.creates, 0);
+  assert.equal((await rows(f)).orders[0].state, "Cancelled");
+});
+test("two tenants reconcile identical exchange execution IDs independently and stopping one does not stop the other", async () => {
+  const a = await fixture(),
+    b = await fixture();
+  await Promise.all([run(a), run(b)]);
+  b.broker.fills[0].execId = a.broker.fills[0].execId;
+  await Promise.all([run(a), run(b)]);
+  assert.ok(Number((await rows(a)).position.quantity) > 0);
+  assert.ok(Number((await rows(b)).position.quantity) > 0);
+  await admin.query("UPDATE bots SET status='STOPPED' WHERE id=$1", [a.bid]);
+  await admin.query(
+    "UPDATE positions SET last_entry_at=now()-interval '2 hours' WHERE bot_id=$1",
+    [b.bid],
+  );
+  a.broker.price = 97;
+  b.broker.price = 97;
+  await Promise.all([run(a), run(b)]);
+  assert.equal(a.broker.creates, 1);
+  assert.equal(b.broker.creates, 2);
+  await run(b);
+  assert.equal((await rows(b)).position.entry_count, 2);
+});
+test("a fill cannot reuse a known client identifier with a different exchange order identity", async () => {
+  const f = await fixture();
+  await run(f);
+  f.broker.fills[0].orderId = "contradictory-exchange-order";
+  await assert.rejects(
+    tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker)),
+    /EXECUTION_ORDER_IDENTITY_MISMATCH/,
+  );
+  assert.equal(Number((await rows(f)).position.quantity), 0);
+});

@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && npm run build -w @trader/web",
     "setup": "tsx scripts/setup.ts",
-    "format": "prettier --write apps packages scripts tests docs README.md"
+    "format": "prettier --write apps packages scripts tests docs README.md",
+    "testnet:preflight": "node --use-env-proxy --import tsx --env-file=.env scripts/testnet-preflight.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

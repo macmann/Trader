@@ -95,7 +95,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
         snapshot.unknownPending ||
         (
           await db.query(
-            "SELECT 1 FROM orders WHERE bot_id=$1 AND tenant_id=$2 AND state NOT IN ('Filled','Cancelled','Rejected','Deactivated','FILLED','CANCELLED','REJECTED') LIMIT 1",
+            "SELECT 1 FROM orders WHERE bot_id=$1 AND tenant_id=$2 AND state NOT IN ('Filled','Cancelled','Rejected','Deactivated','PartiallyFilledCanceled','FILLED','CANCELLED','REJECTED') LIMIT 1",
             [id, tid],
           )
         ).rowCount
