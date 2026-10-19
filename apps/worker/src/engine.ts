@@ -1,3 +1,10 @@
+import { paperCycle } from "./paper.ts";
+import {
+  exchangeAdapter,
+  type ExchangeAdapter,
+  type ExchangeCredentials,
+} from "../../../packages/exchanges/src/index.ts";
+import { notificationCycle } from "./notifications.ts";
 import { reconcile, orderEvent, terminal } from "./ledger.ts";
 export { reconcile } from "./ledger.ts";
 import {
@@ -37,7 +44,6 @@ import { Decimal } from "decimal.js";
 import type pg from "pg";
 import { pool, tenant, audit } from "../../api/src/db.ts";
 import {
-  BybitAdapter,
   botConfig,
   decrypt,
   risk,
@@ -54,12 +60,14 @@ const feeds = new Map<
     authenticated: boolean;
     lastMessage: number;
     credentials: Credentials;
+    provider: string;
   }
 >();
 const market = new Map<string, number>();
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
 const wsOptions = proxyUrl ? { agent: new HttpsProxyAgent(proxyUrl) } : {};
 let publicSocket: WebSocket | null = null;
+let okxSocket: WebSocket | null = null;
 let closing = false;
 function publicFeed() {
   if (closing) return;
@@ -87,26 +95,93 @@ function publicFeed() {
         Number.isFinite(message.ts) &&
         Math.abs(Date.now() - message.ts) < 45000
       )
-        market.set(message.topic.split(".").at(-1), Date.now());
+        market.set("BYBIT:" + message.topic.split(".").at(-1), Date.now());
     } catch {}
   });
   socket.on("error", () => socket.close());
   socket.on("close", () => {
-    market.clear();
+    for (const symbol of symbols) market.delete("BYBIT:" + symbol);
     if (!closing) setTimeout(publicFeed, 5000);
   });
 }
-function privateFeed(id: string, credentials: Credentials) {
+function okxPublicFeed() {
+  if (closing) return;
+  const socket = new WebSocket(
+    "wss://wspap.okx.com:8443/ws/v5/public",
+    wsOptions,
+  );
+  okxSocket = socket;
+  socket.on("open", () =>
+    socket.send(
+      JSON.stringify({
+        op: "subscribe",
+        args: symbols.map((symbol) => ({
+          channel: "tickers",
+          instId: symbol.replace("USDT", "-USDT"),
+        })),
+      }),
+    ),
+  );
+  socket.on("message", (data) => {
+    try {
+      const m = JSON.parse(data.toString());
+      const tick = m.data?.[0];
+      if (
+        m.arg?.channel === "tickers" &&
+        tick?.ts &&
+        Math.abs(Date.now() - Number(tick.ts)) < 45000
+      )
+        market.set("OKX:" + m.arg.instId.replace("-", ""), Date.now());
+    } catch {}
+  });
+  socket.on("error", () => socket.close());
+  socket.on("close", () => {
+    for (const symbol of symbols) market.delete("OKX:" + symbol);
+    if (!closing) setTimeout(okxPublicFeed, 5000);
+  });
+}
+function privateFeed(
+  id: string,
+  credentials: ExchangeCredentials,
+  provider = "BYBIT",
+) {
   let feed = feeds.get(id);
   if (feed) return feed;
   const socket = new WebSocket(
-    "wss://stream-testnet.bybit.com/v5/private",
+    provider === "OKX"
+      ? "wss://wspap.okx.com:8443/ws/v5/private"
+      : "wss://stream-testnet.bybit.com/v5/private",
     wsOptions,
   );
-  feed = { socket, authenticated: false, lastMessage: 0, credentials };
+  feed = {
+    socket,
+    authenticated: false,
+    lastMessage: 0,
+    credentials,
+    provider,
+  };
   feeds.set(id, feed);
   const current = feed;
   socket.on("open", () => {
+    if (provider === "OKX") {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      socket.send(
+        JSON.stringify({
+          op: "login",
+          args: [
+            {
+              apiKey: credentials.apiKey,
+              passphrase: credentials.passphrase,
+              timestamp,
+              sign: createHmac("sha256", credentials.apiSecret)
+                .update(timestamp + "GET/users/self/verify")
+                .digest("base64"),
+            },
+          ],
+        }),
+      );
+      return;
+    }
     const expires = Date.now() + 10000;
     socket.send(
       JSON.stringify({
@@ -123,7 +198,24 @@ function privateFeed(id: string, credentials: Credentials) {
   });
   socket.on("message", (data) => {
     try {
+      if (provider === "OKX" && data.toString() === "pong") {
+        current.lastMessage = Date.now();
+        return;
+      }
       const m = JSON.parse(data.toString());
+      if (provider === "OKX" && m.event === "login") {
+        current.authenticated = m.code === "0";
+        if (current.authenticated)
+          socket.send(
+            JSON.stringify({
+              op: "subscribe",
+              args: [
+                { channel: "orders", instType: "SPOT" },
+                { channel: "account" },
+              ],
+            }),
+          );
+      }
       if (m.op === "auth" && m.success) {
         current.authenticated = true;
         socket.send(
@@ -148,7 +240,7 @@ export async function tick(
   tid: string,
   botId: string,
   override?: {
-    adapter: BybitAdapter;
+    adapter: ExchangeAdapter;
     privateReady: boolean;
     marketReceivedAt: number;
     executionEnabled: boolean;
@@ -173,7 +265,7 @@ export async function tick(
         return;
       const row = (
         await db.query(
-          "SELECT b.*,c.environment,c.credentials,c.status AS connection_status FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b,c",
+          "SELECT b.*,c.provider,c.environment,c.credentials,c.status AS connection_status FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b,c",
           [botId, tid],
         )
       ).rows[0];
@@ -188,9 +280,10 @@ export async function tick(
         return;
       const adapter =
         override?.adapter ??
-        new BybitAdapter(
+        exchangeAdapter(
+          row.provider,
           "TESTNET",
-          decrypt<Credentials>(
+          decrypt<ExchangeCredentials>(
             row.credentials,
             key,
             `${tid}:${row.connection_id}:${row.environment}`,
@@ -200,11 +293,12 @@ export async function tick(
         ? null
         : privateFeed(
             row.connection_id,
-            decrypt<Credentials>(
+            decrypt<ExchangeCredentials>(
               row.credentials,
               key,
               `${tid}:${row.connection_id}:${row.environment}`,
             ),
+            row.provider,
           );
       const runtime: ExecutionRuntime = {
         executionEnabled:
@@ -214,7 +308,9 @@ export async function tick(
           override?.privateReady ??
           (!!feed?.authenticated && clock() - (feed?.lastMessage ?? 0) < 45000),
         marketReceivedAt:
-          override?.marketReceivedAt ?? market.get(row.symbol) ?? 0,
+          override?.marketReceivedAt ??
+          market.get(row.provider + ":" + row.symbol) ??
+          0,
         now: clock,
         isPrivateReady: () =>
           override
@@ -223,7 +319,9 @@ export async function tick(
               feed.socket.readyState === WebSocket.OPEN &&
               clock() - feed.lastMessage < 45000,
         marketTime: () =>
-          override?.marketReceivedAt ?? market.get(row.symbol) ?? 0,
+          override?.marketReceivedAt ??
+          market.get(row.provider + ":" + row.symbol) ??
+          0,
         afterSubmitting: override?.afterSubmitting,
       };
       const hasOrders = (
@@ -614,7 +712,8 @@ export async function tick(
         return;
       }
       const orderId = randomUUID(),
-        clientId = orderId;
+        clientId =
+          row.provider === "OKX" ? orderId.replaceAll("-", "") : orderId;
       await db.query(
         "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state,symbol,requested_notional,order_type,limit_price,time_in_force,expires_at,strategy_version,grid_level,strategy_cycle) VALUES($1,$2,$3,$4,$5,$6,$7,'INTERNAL_CREATED',$8,$9,$10,$11,$12,$13,$14,$15,$16)",
         [
@@ -668,9 +767,11 @@ export async function startWorker() {
     }),
   );
   publicFeed();
+  okxPublicFeed();
   const shutdown = () => {
     closing = true;
     publicSocket?.close();
+    okxSocket?.close();
     for (const feed of feeds.values()) feed.socket.close();
   };
   process.once("SIGTERM", shutdown);
@@ -678,12 +779,19 @@ export async function startWorker() {
   const heartbeat = setInterval(() => {
     for (const f of feeds.values())
       if (f.socket.readyState === WebSocket.OPEN)
-        f.socket.send(JSON.stringify({ op: "ping" }));
+        f.socket.send(
+          f.provider === "OKX" ? "ping" : JSON.stringify({ op: "ping" }),
+        );
+    if (okxSocket?.readyState === WebSocket.OPEN) okxSocket.send("ping");
     if (publicSocket?.readyState === WebSocket.OPEN)
       publicSocket.send(JSON.stringify({ op: "ping" }));
   }, 20000);
   let newsJob: Promise<void> | null = null,
-    marketJob: Promise<void> | null = null;
+    marketJob: Promise<void> | null = null,
+    paperJob: Promise<void> | null = null,
+    notificationJob: Promise<void> | null = null;
+  let lastPaper = 0,
+    lastNotifications = 0;
   while (!closing) {
     try {
       if (!newsJob)
@@ -739,6 +847,28 @@ export async function startWorker() {
           }
         }
       }
+      if (!paperJob && Date.now() - lastPaper >= 30000) {
+        lastPaper = Date.now();
+        paperJob = paperCycle()
+          .catch(() =>
+            console.error(JSON.stringify({ event: "PAPER_CYCLE_FAILED" })),
+          )
+          .finally(() => {
+            paperJob = null;
+          });
+      }
+      if (!notificationJob && Date.now() - lastNotifications >= 10000) {
+        lastNotifications = Date.now();
+        notificationJob = notificationCycle()
+          .catch(() =>
+            console.error(
+              JSON.stringify({ event: "NOTIFICATION_CYCLE_FAILED" }),
+            ),
+          )
+          .finally(() => {
+            notificationJob = null;
+          });
+      }
       for (const [id, f] of feeds)
         if (!active.has(id)) {
           f.socket.close();
@@ -751,7 +881,7 @@ export async function startWorker() {
   }
   clearInterval(heartbeat);
 
-  await Promise.allSettled([newsJob, marketJob]);
+  await Promise.allSettled([newsJob, marketJob, paperJob, notificationJob]);
   await closeIntelligence();
   await pool.end();
 }

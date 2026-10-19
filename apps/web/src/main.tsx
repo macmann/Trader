@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 import { TradingDesk } from "./TradingDesk.tsx";
+import { Platform } from "./Platform.tsx";
 import { Intelligence } from "./Intelligence.tsx";
 type Bot = {
   id: string;
@@ -270,7 +271,7 @@ function App() {
       <aside>
         <div className="brand">◈ TRADER</div>
         <div className="workspace">
-          Personal workspace<small>{user.email}</small>
+          {user.role} workspace<small>{user.email}</small>
         </div>
         <div className="eyebrow">WORKSPACE</div>
         <nav>
@@ -279,6 +280,7 @@ function App() {
             "Bots",
             "Exchanges",
             "Portfolio",
+            "Platform",
             "AI Analysis",
             "News",
             "Orders",
@@ -532,6 +534,16 @@ function App() {
                   </section>
                 </>
               )}
+              {page === "Platform" && (
+                <Platform
+                  key={user.tenantId}
+                  request={api}
+                  user={user}
+                  refresh={refresh}
+                  connections={connections}
+                  bots={bots}
+                />
+              )}
               {page === "Portfolio" && (
                 <TradingDesk bots={bots} request={api} refreshBots={refresh} />
               )}
@@ -551,7 +563,7 @@ function App() {
                       className="primary"
                       onClick={() => setDialog("connection")}
                     >
-                      + Connect Bybit
+                      + Connect exchange
                     </button>
                   </div>
                   {!connections.length ? (
@@ -567,7 +579,7 @@ function App() {
                         className="primary"
                         onClick={() => setDialog("connection")}
                       >
-                        Connect Bybit Testnet
+                        Connect exchange Testnet
                       </button>
                     </section>
                   ) : (
@@ -690,7 +702,9 @@ function App() {
             </button>
             <div className="eyebrow">TESTNET WORKSPACE</div>
             <h2>
-              {dialog === "bot" ? "Create your bot" : "Connect Bybit Testnet"}
+              {dialog === "bot"
+                ? "Create your bot"
+                : "Connect exchange Testnet"}
             </h2>
             {feedback}
             {dialog === "connection" ? (
@@ -701,6 +715,10 @@ function App() {
                     environment: "TESTNET",
                     apiKey: f.get("apiKey"),
                     apiSecret: f.get("apiSecret"),
+                    provider: f.get("provider"),
+                    ...(f.get("passphrase")
+                      ? { passphrase: f.get("passphrase") }
+                      : {}),
                   });
                   setDialog("");
                   await refresh();
@@ -714,6 +732,17 @@ function App() {
                     required
                     maxLength={80}
                   />
+                </label>
+                <label>
+                  Provider
+                  <select name="provider">
+                    <option value="BYBIT">Bybit Testnet</option>
+                    <option value="OKX">OKX Demo</option>
+                  </select>
+                </label>
+                <label>
+                  OKX passphrase (OKX only)
+                  <input name="passphrase" type="password" autoComplete="off" />
                 </label>
                 <label>
                   API key
@@ -734,8 +763,9 @@ function App() {
                   />
                 </label>
                 <p className="muted">
-                  Credentials are verified with Bybit before encrypted storage.
-                  Enable Spot trading, disable withdrawals and transfers.
+                  Credentials are verified with the selected exchange before
+                  encrypted storage. Enable Spot trading, disable withdrawals
+                  and transfers.
                 </p>
                 <button className="primary" disabled={busy}>
                   {busy ? "Verifying…" : "Test connection & save"}
@@ -842,3 +872,6 @@ function App() {
   );
 }
 createRoot(document.getElementById("root")!).render(<App />);
+
+if ("serviceWorker" in navigator)
+  void navigator.serviceWorker.register("/sw.js").catch(() => {});

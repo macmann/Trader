@@ -492,3 +492,113 @@ test("reconciliation follows pagination and holds terminal orders until all exch
   assert.equal((await rows(f)).orders[0].state, "Filled");
   assert.equal((await rows(f)).position.entry_count, 1);
 });
+test("OKX Demo worker reconciles an acknowledgement loss using exchange-only fill IDs without resending", async () => {
+  const { OKXAdapter } = await import("../packages/exchanges/src/index.ts");
+  const f = await fixture();
+  await admin.query(
+    "UPDATE exchange_connections SET provider='OKX' WHERE id=$1",
+    [f.cid],
+  );
+  const reply = (data: any[]) =>
+    new Response(JSON.stringify({ code: "0", data }));
+  const transport = (async (url: any, init: any) => {
+    const u = new URL(url),
+      path = u.pathname;
+    if (path.endsWith("/instruments"))
+      return reply([
+        {
+          state: "live",
+          tickSz: "0.01",
+          lotSz: "0.000001",
+          minSz: "0.000001",
+          maxMktSz: "100000",
+          maxLmtSz: "100000",
+        },
+      ]);
+    if (path.endsWith("/ticker"))
+      return reply([
+        {
+          last: String(f.broker.price),
+          bidPx: String(f.broker.price - 0.1),
+          askPx: String(f.broker.price + 0.1),
+        },
+      ]);
+    if (path.endsWith("/candles"))
+      return reply(
+        (await f.broker.getCandles("BTCUSDT"))
+          .reverse()
+          .map((c) =>
+            [c.time, c.open, c.high, c.low, c.close, c.volume, 0, 0, "1"].map(
+              String,
+            ),
+          ),
+      );
+    if (path.endsWith("/balance"))
+      return reply([
+        {
+          details: (await f.broker.getBalances()).list[0].coin.map(
+            (c: any) => ({
+              ccy: c.coin,
+              cashBal: c.walletBalance,
+              availBal: c.walletBalance,
+            }),
+          ),
+        },
+      ]);
+    if (path.endsWith("/orders-pending")) return reply([]);
+    if (path.endsWith("/fills-history"))
+      return reply(
+        f.broker.fills.map((e: any) => ({
+          billId: e.execId,
+          ordId: f.broker.orders.get(e.orderLinkId).orderId,
+          fillSz: e.execQty,
+          fillPx: e.execPrice,
+          ts: e.execTime,
+          fee: String(-Number(e.execFee)),
+          feeCcy: e.feeCurrency,
+        })),
+      );
+    if (path.endsWith("/order") && init.method === "GET") {
+      const o = f.broker.orders.get(u.searchParams.get("clOrdId")!);
+      return reply(
+        o
+          ? [
+              {
+                ordId: o.orderId,
+                clOrdId: o.orderLinkId,
+                instId: "BTC-USDT",
+                state: "filled",
+                accFillSz: o.cumExecQty,
+              },
+            ]
+          : [],
+      );
+    }
+    if (path.endsWith("/order") && init.method === "POST") {
+      const p = JSON.parse(init.body);
+      await f.broker.placeOrder({
+        symbol: p.instId.replace("-", ""),
+        side: p.side === "buy" ? "Buy" : "Sell",
+        qty: p.sz,
+        orderLinkId: p.clOrdId,
+        orderType: "Market",
+      });
+      throw Error("SIMULATED_RESPONSE_LOSS");
+    }
+    throw Error("UNEXPECTED_ENDPOINT " + path);
+  }) as typeof fetch;
+  const adapter = new OKXAdapter(
+    "TESTNET",
+    { apiKey: "fixture", apiSecret: "fixture", passphrase: "fixture" },
+    transport,
+  );
+  await run(f, { adapter });
+  assert.equal(f.broker.creates, 1);
+  assert.match((await rows(f)).orders[0].client_id, /^[a-z0-9]{32}$/);
+  await run(f, { adapter });
+  const state = await rows(f);
+  assert.equal(f.broker.creates, 1);
+  assert.equal(state.orders[0].state, "Filled");
+  assert.ok(Number(state.position.quantity) > 0);
+  assert.equal(state.position.entry_count, 1);
+});

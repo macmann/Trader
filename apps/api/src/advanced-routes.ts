@@ -126,7 +126,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           .code(409)
           .send({ error: "PORTFOLIO_ALLOCATION_REJECTED", reasons });
       await db.query(
-        "UPDATE bots SET name=$1,symbol=$2,strategy_version=$3,config=$4,advanced_config=$5,last_candle=NULL,last_ai_news=NULL WHERE id=$6 AND tenant_id=$7",
+        "UPDATE bots SET marketplace_version_id=NULL,name=$1,symbol=$2,strategy_version=$3,config=$4,advanced_config=$5,last_candle=NULL,last_ai_news=NULL WHERE id=$6 AND tenant_id=$7",
         [
           v.name ?? bot.name,
           symbol,

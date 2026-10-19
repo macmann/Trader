@@ -302,7 +302,7 @@ export class BybitAdapter {
       limit: 50,
     });
   }
-  async getOrder(clientId: string) {
+  async getOrder(clientId: string, _symbol?: string) {
     const result = await this.request("/v5/order/realtime", {
       category: "spot",
       orderLinkId: clientId,

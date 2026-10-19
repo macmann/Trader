@@ -390,3 +390,20 @@ test("news ingestion deduplicates and validated high-impact classification refre
     db.release();
   }
 });
+test("workspace AI quota fails Filter closed while Advisory keeps strategy decisions available", async () => {
+  const a = await fixture();
+  await admin.query(
+    "INSERT INTO usage_records(tenant_id,metric,units,reference) VALUES($1,'ai',20,'quota-fixture')",
+    [a.tid],
+  );
+  const blocked = await tenant(a.tid, (db) =>
+    analyzeBot(db, a.tid, a.bid, "FILTER", input(), "LONG", true, null),
+  );
+  assert.equal(blocked.gate.allowed, false);
+  assert.equal(blocked.outcome?.error, "AI_BUDGET_EXCEEDED");
+  const advisory = await tenant(a.tid, (db) =>
+    analyzeBot(db, a.tid, a.bid, "ADVISORY", input(), "LONG", true, null),
+  );
+  assert.equal(advisory.gate.allowed, true);
+  assert.equal(advisory.outcome?.error, "AI_BUDGET_EXCEEDED");
+});

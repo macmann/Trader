@@ -422,7 +422,16 @@ export function instrumentVeto(
             : filter.maxMarketOrderQty) ?? filter.maxOrderQty,
         ),
       );
-    if ([q, p, step, minValue, maxQty].some((v) => !v.isFinite() || v.lte(0)))
+    if (
+      [q, p, step, maxQty].some((v) => !v.isFinite() || v.lte(0)) ||
+      !minValue.isFinite() ||
+      minValue.lt(0) ||
+      (minValue.isZero() &&
+        !(
+          Number(filter.minOrderQty) > 0 &&
+          Number.isFinite(Number(filter.minOrderQty))
+        ))
+    )
       return ["INVALID_INSTRUMENT_METADATA"];
     const reasons: string[] = [];
     if (!q.mod(step).isZero()) reasons.push("QUANTITY_STEP_MISMATCH");

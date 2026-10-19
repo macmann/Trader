@@ -57,6 +57,9 @@ async function account() {
     )
   ).rows[0];
   users.push(u.id);
+  await admin.query("UPDATE subscriptions SET plan='PRO' WHERE tenant_id=$1", [
+    u.tid,
+  ]);
   const mail = (
     await readFile(
       process.env.TEST_MAIL_OUTBOX_PATH ?? ".local/mail.jsonl",

@@ -25,7 +25,7 @@ LIVE_TRADING_PLATFORM_ENABLED=false
 TRADING_EXECUTION_ENABLED=false
 ```
 
-Alternatively set `AI_PROVIDER=anthropic` and use its matching model and credential. Restart the API and worker after configuration changes. npm runtime commands enable Node 24’s `--use-env-proxy` so native fetch uses the cloud’s existing HTTPS proxy while retaining TLS verification. The model must support the adapter's structured-output request; unsupported models produce explicit failures. These adapters were verified with HTTP fixtures; actual provider/model compatibility requires an authenticated smoke test.
+Alternatively set `AI_PROVIDER=anthropic`, `gemini` or `deepseek` and use its matching model and credential. Restart the API and worker after configuration changes. npm runtime commands enable Node 24’s `--use-env-proxy` so native fetch uses the cloud’s existing HTTPS proxy while retaining TLS verification. The model must support the adapter's structured-output request; unsupported models produce explicit failures. These adapters were verified with HTTP fixtures; actual provider/model compatibility requires an authenticated smoke test.
 
 The AI key belongs to the platform owner, is used server-side only, and is never accepted through customer bot forms or returned to the browser. Do not commit credentials or paste them into chat. The public API readiness response reports configuration presence, not authenticated provider readiness.
 
