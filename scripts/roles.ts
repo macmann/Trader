@@ -8,15 +8,36 @@ export async function configureLocalRole(db: pg.Client) {
   );
 }
 
-export async function configureDeploymentRole(db: pg.Client, password: string) {
-  if (password.length < 32 || password.includes("\0"))
-    throw Error("APP_DATABASE_PASSWORD must contain at least 32 characters");
-  await db.query(
-    "DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='trader_app') THEN CREATE ROLE trader_app NOSUPERUSER NOBYPASSRLS; END IF; END $$",
+export async function configureDeploymentRole(db: pg.Client, role: string) {
+  if (!role || Buffer.byteLength(role) > 63 || role.includes("\0"))
+    throw Error("APP_DATABASE_USER must name an existing restricted role");
+  const result = await db.query(
+    "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolcanlogin FROM pg_roles WHERE rolname=$1",
+    [role],
   );
-  await db.query(
-    "ALTER ROLE trader_app WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD " +
-      db.escapeLiteral(password),
+  const account = result.rows[0];
+  if (
+    !account ||
+    !account.rolcanlogin ||
+    account.rolsuper ||
+    account.rolbypassrls ||
+    account.rolcreaterole ||
+    account.rolcreatedb
+  )
+    throw Error("Runtime database role must be a restricted login");
+  const identity = await db.query("SELECT current_user = $1 AS same", [role]);
+  if (identity.rows[0].same)
+    throw Error("Migration and runtime roles must differ");
+  const inherited = await db.query(
+    "SELECT 1 FROM pg_roles WHERE pg_has_role($1,oid,'MEMBER') AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolname=current_user) UNION ALL SELECT 1 FROM pg_class WHERE relnamespace='public'::regnamespace AND pg_has_role($1,relowner,'MEMBER') LIMIT 1",
+    [role],
   );
-  await configureLocalRole(db);
+  if (inherited.rowCount)
+    throw Error(
+      "Runtime role must not inherit privileged roles or own schema objects",
+    );
+  const identifier = db.escapeIdentifier(role);
+  await db.query(
+    `GRANT USAGE ON SCHEMA public TO ${identifier}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${identifier}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${identifier}; REVOKE UPDATE,DELETE ON audit_logs,order_events,trade_cycles,marketplace_versions,marketplace_evidence,research_runs,usage_records,billing_events FROM ${identifier}; REVOKE INSERT,UPDATE,DELETE ON platform_controls,schema_migrations FROM ${identifier}`,
+  );
 }

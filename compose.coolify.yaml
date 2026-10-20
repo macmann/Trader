@@ -4,10 +4,11 @@ x-build: &build
   target: runtime
 x-runtime-environment: &runtime-environment
   NODE_ENV: production
-  PGHOST: postgres
-  PGPORT: "5432"
-  PGDATABASE: trader
-  PGUSER: trader_app
+  PGHOST: ${PGHOST:?Set PGHOST to your shared PostgreSQL host}
+  PGPORT: ${PGPORT:-5432}
+  PGDATABASE: ${PGDATABASE:?Set PGDATABASE to a dedicated Trader database}
+  PGSSLMODE: ${PGSSLMODE:-verify-full}
+  PGUSER: ${APP_DATABASE_USER:?Set APP_DATABASE_USER to your restricted runtime role}
   PGPASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD to a strong password of at least 32 characters}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY to a permanent 64-character hex key}
   TRADING_EXECUTION_ENABLED: "false"
@@ -18,20 +19,6 @@ x-runtime-environment: &runtime-environment
   AI_MAX_CALLS_PER_DAY: ${AI_MAX_CALLS_PER_DAY:-100}
   NEWS_ENABLED: ${NEWS_ENABLED:-false}
 services:
-  postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: trader_admin
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a strong database administrator password}
-      POSTGRES_DB: trader
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trader_admin -d trader"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
   migrate:
     build: *build
     init: true
@@ -45,15 +32,13 @@ services:
         "scripts/deploy-migrate.ts",
       ]
     environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: trader
-      PGUSER: trader_admin
-      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
-      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD}
-    depends_on:
-      postgres:
-        condition: service_healthy
+      PGHOST: ${PGHOST:?Set PGHOST}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:?Set PGDATABASE}
+      PGSSLMODE: ${PGSSLMODE:-verify-full}
+      PGUSER: ${MIGRATION_DATABASE_USER:?Set MIGRATION_DATABASE_USER}
+      PGPASSWORD: ${MIGRATION_DATABASE_PASSWORD:?Set MIGRATION_DATABASE_PASSWORD}
+      APP_DATABASE_USER: ${APP_DATABASE_USER:?Set APP_DATABASE_USER}
     healthcheck:
       disable: true
   web:
@@ -76,8 +61,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
   worker:
     build: *build
     init: true
@@ -107,7 +90,3 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-volumes:
-  postgres-data:

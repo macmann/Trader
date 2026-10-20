@@ -58,4 +58,4 @@ Phases 4–5 add organization roles, plan quotas and a signed billing gateway, O
 
 Run `npm run testnet:preflight` for a read-only, sanitized readiness report. It never submits orders and cannot certify external acceptance. See [Testnet acceptance and reliability](docs/testnet-acceptance.md).
 
-For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/compose.coolify.yaml`. It includes private PostgreSQL, one-shot migrations, a restricted application role, production email, web/worker health checks and disabled trading defaults.
+For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/compose.coolify.yaml`. It connects to your existing shared PostgreSQL server and includes one-shot migrations, a restricted application role, production email, web/worker health checks and disabled trading defaults.
