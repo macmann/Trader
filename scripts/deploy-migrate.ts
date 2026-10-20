@@ -11,7 +11,7 @@ try {
       await readFile(new URL("../infra/schema.sql", import.meta.url), "utf8"),
     );
     await migrate(db);
-    await configureDeploymentRole(db, process.env.APP_DATABASE_PASSWORD ?? "");
+    await configureDeploymentRole(db, process.env.APP_DATABASE_USER ?? "");
   } finally {
     await db.query("SELECT pg_advisory_unlock(72723250)");
   }
@@ -20,7 +20,7 @@ try {
   );
 } catch {
   console.error(
-    "Deployment initialization failed; check database access, migration checksums and application password configuration",
+    "Deployment initialization failed; check database access, migration checksums and restricted runtime role configuration",
   );
   process.exitCode = 1;
 } finally {
