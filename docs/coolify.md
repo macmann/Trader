@@ -34,22 +34,19 @@ The database hostname must be reachable **from all three containers**. `localhos
 
 Set these environment variables in Coolify (see `infra/coolify.env.example`):
 
-| Variable                      | Value                                                                                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `PGHOST`                      | Reachable hostname of your existing PostgreSQL server                                                  |
-| `PGPORT`                      | PostgreSQL port; defaults to `5432`                                                                    |
-| `PGDATABASE`                  | Dedicated Trader database name                                                                         |
-| `PGSSLMODE`                   | Defaults to `verify-full`; use `disable` only for a trusted private network when PostgreSQL has no TLS |
-| `APP_DATABASE_USER`           | Pre-created restricted runtime login                                                                   |
-| `APP_DATABASE_PASSWORD`       | Its existing password, at least 32 characters                                                          |
-| `MIGRATION_DATABASE_USER`     | Separate database/schema owner login                                                                   |
-| `MIGRATION_DATABASE_PASSWORD` | Its existing password                                                                                  |
-| `APP_ORIGIN`                  | Exact HTTPS origin, e.g. `https://trader.example.com`, without trailing slash/path                     |
-| `APP_ENCRYPTION_KEY`          | Permanent random 64-character hex encryption key                                                       |
-| `MAIL_FROM`                   | Sender on your verified Resend domain                                                                  |
-| `RESEND_API_KEY`              | Resend sending key                                                                                     |
+| Variable             | Value                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `DATABASE_URL`       | Runtime connection URL, e.g. `postgresql://trader_app:ENCODED_PASSWORD@HOST:5432/trader?sslmode=verify-full` |
+| `DATABASE_ADMIN_URL` | Migration-owner connection URL to the **same server and database**, with a separate login                    |
+| `APP_DATABASE_USER`  | Restricted runtime role name; must match the decoded username in `DATABASE_URL`                              |
+| `APP_ORIGIN`         | Exact HTTPS origin, e.g. `https://tradingbot.b-connect.site`, without trailing slash/path                    |
+| `APP_ENCRYPTION_KEY` | Permanent random 64-character hex encryption key                                                             |
+| `MAIL_FROM`          | Sender on your verified Resend domain                                                                        |
+| `RESEND_API_KEY`     | Resend sending key                                                                                           |
 
-Generate a new encryption key with `openssl rand -hex 32`, and back it up securely. Replacing it makes stored exchange credentials unreadable. Database passwords are existing server credentials, passed as individual fields, so URL escaping is unnecessary. The application does not rotate them on deployment. Database migration credentials are supplied only to the migration container.
+Generate a new encryption key with `openssl rand -hex 32`, and back it up securely. Replacing it makes stored exchange credentials unreadable. URL-encode usernames and passwords, including special characters such as `@`, `:`, `/`, `#`, `%` and `$`. Enter secrets securely in Coolify; never commit actual connection URLs. Database migration credentials are supplied only to the migration container; web and worker receive only `DATABASE_URL`. The deployment does not rotate passwords.
+
+Set TLS in each URL with `?sslmode=verify-full`. Use `?sslmode=disable` only on a trusted private network when PostgreSQL has no TLS. The old individual `PGHOST`, `PGPORT`, `PGDATABASE`, `PGSSLMODE` and database password variables are no longer required by Compose.
 
 TLS verifies the database certificate and hostname. For a private certificate authority, mount its PEM file read-only into all three services using Coolify configuration and set `NODE_EXTRA_CA_CERTS` to that container path on each service. Do not disable certificate verification to work around an untrusted certificate.
 

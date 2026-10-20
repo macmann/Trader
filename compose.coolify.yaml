@@ -4,12 +4,7 @@ x-build: &build
   target: runtime
 x-runtime-environment: &runtime-environment
   NODE_ENV: production
-  PGHOST: ${PGHOST:?Set PGHOST to your shared PostgreSQL host}
-  PGPORT: ${PGPORT:-5432}
-  PGDATABASE: ${PGDATABASE:?Set PGDATABASE to a dedicated Trader database}
-  PGSSLMODE: ${PGSSLMODE:-verify-full}
-  PGUSER: ${APP_DATABASE_USER:?Set APP_DATABASE_USER to your restricted runtime role}
-  PGPASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD to a strong password of at least 32 characters}
+  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to your restricted PostgreSQL connection URL}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY to a permanent 64-character hex key}
   TRADING_EXECUTION_ENABLED: "false"
   LIVE_TRADING_PLATFORM_ENABLED: "false"
@@ -32,12 +27,7 @@ services:
         "scripts/deploy-migrate.ts",
       ]
     environment:
-      PGHOST: ${PGHOST:?Set PGHOST}
-      PGPORT: ${PGPORT:-5432}
-      PGDATABASE: ${PGDATABASE:?Set PGDATABASE}
-      PGSSLMODE: ${PGSSLMODE:-verify-full}
-      PGUSER: ${MIGRATION_DATABASE_USER:?Set MIGRATION_DATABASE_USER}
-      PGPASSWORD: ${MIGRATION_DATABASE_PASSWORD:?Set MIGRATION_DATABASE_PASSWORD}
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?Set DATABASE_ADMIN_URL to your migration PostgreSQL connection URL}
       APP_DATABASE_USER: ${APP_DATABASE_USER:?Set APP_DATABASE_USER}
     healthcheck:
       disable: true

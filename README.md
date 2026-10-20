@@ -59,3 +59,21 @@ Phases 4–5 add organization roles, plan quotas and a signed billing gateway, O
 Run `npm run testnet:preflight` for a read-only, sanitized readiness report. It never submits orders and cannot certify external acceptance. See [Testnet acceptance and reliability](docs/testnet-acceptance.md).
 
 For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/compose.coolify.yaml`. It connects to your existing shared PostgreSQL server and includes one-shot migrations, a restricted application role, production email, web/worker health checks and disabled trading defaults.
+
+## Coolify mandatory environment
+
+Deploy `/compose.coolify.yaml` with these variables in Coolify:
+
+```env
+APP_ORIGIN=https://tradingbot.b-connect.site
+APP_ENCRYPTION_KEY=<permanent 64-character hex key>
+DATABASE_URL=postgresql://trader_app:ENCODED_PASSWORD@HOST:5432/trader?sslmode=verify-full
+DATABASE_ADMIN_URL=postgresql://trader_migrator:ENCODED_PASSWORD@HOST:5432/trader?sslmode=verify-full
+APP_DATABASE_USER=trader_app
+MAIL_FROM=Trading Bot <accounts@b-connect.site>
+RESEND_API_KEY=<Resend sending key>
+```
+
+Generate the encryption key once with `openssl rand -hex 32` and keep a secure backup. Replace placeholders and URL-encode database usernames/passwords. Both URLs must point to the same dedicated Trader database on your shared PostgreSQL server. Pre-create separate migration-owner and restricted runtime roles; `APP_DATABASE_USER` must match the username in `DATABASE_URL`. The runtime role must not own tables or bypass RLS. Only the migration service receives `DATABASE_ADMIN_URL`.
+
+Use a database hostname reachable from containers. For a trusted private database network without TLS, use `sslmode=disable` in both URLs. Individual `PG*` fields are unnecessary. Verify `b-connect.site` in Resend before using the example sender. Assign `https://tradingbot.b-connect.site` to the **web** service on container port **3000** and point DNS to your Coolify server. Trading stays disabled. See [the full provisioning and deployment guide](docs/coolify.md).
