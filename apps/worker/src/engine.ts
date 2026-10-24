@@ -1,3 +1,4 @@
+import { assetTotal, checkInventory } from "./inventory.ts";
 import {
   recordObservation,
   failureObservation,
@@ -577,21 +578,14 @@ export async function tick(
         available = Number(
           coins.find((c: any) => c.coin === "USDT")?.walletBalance ?? 0,
         );
-      // Fail closed on account-level asset discrepancies. Dedicated Testnet accounts are recommended.
-      const accountBtc = Number(
-          coins.find((c: any) => c.coin === row.symbol.replace(/USDT$/, ""))
-            ?.walletBalance ?? 0,
-        ),
-        tracked = Number(
-          (
-            await db.query(
-              "SELECT COALESCE(sum(p.quantity),0) AS qty FROM positions p JOIN bots b ON b.id=p.bot_id WHERE b.connection_id=$1 AND p.tenant_id=$2 AND b.symbol=$3",
-              [row.connection_id, tid, row.symbol],
-            )
-          ).rows[0].qty,
-        );
-      if (Math.abs(accountBtc - tracked) > 0.000001)
-        throw Error("UNEXPECTED_ACCOUNT_POSITION");
+      const asset = row.symbol.replace(/USDT$/, "");
+      await checkInventory(
+        db,
+        tid,
+        row.connection_id,
+        asset,
+        assetTotal(balance, asset),
+      );
       const portfolio = await portfolioSnapshot(db, tid);
       const connectionExposure = portfolio.connections[row.connection_id];
       const reservedQuote = connectionExposure?.pending ?? 0;
