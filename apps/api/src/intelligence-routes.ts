@@ -1,3 +1,5 @@
+import { duration } from "../../../packages/trading/src/creator.ts";
+import { exchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import { runtimeProvider, runtimeConfiguration } from "./installation.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -63,11 +65,15 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     return tenant(tid, async (db) => {
       const bot = (
         await db.query(
-          "SELECT status FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
+          "SELECT status,strategy_version FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
           [id, tid],
         )
       ).rows[0];
       if (!bot) return reply.code(404).send({ error: "NOT_FOUND" });
+      if (bot.strategy_version === "ai-v1.0" && mode !== "OFF")
+        return reply
+          .code(400)
+          .send({ error: "AI_STRATEGY_USES_ITS_OWN_MODEL_CONFIGURATION" });
       if (["RUNNING", "STARTING", "STOPPING"].includes(bot.status))
         return reply
           .code(409)
@@ -90,25 +96,33 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         return reply.code(503).send({ error: "AI_UNAVAILABLE" });
       return tenant(tid, async (db) => {
         const bot = (
-          await db.query("SELECT * FROM bots WHERE id=$1 AND tenant_id=$2", [
-            id,
-            tid,
-          ])
+          await db.query(
+            "SELECT b.*,c.provider FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
+            [id, tid],
+          )
         ).rows[0];
         if (!bot) return reply.code(404).send({ error: "NOT_FOUND" });
         if (bot.ai_mode === "OFF")
           return reply
             .code(409)
             .send({ error: "ENABLE_ADVISORY_OR_FILTER_MODE" });
-        const candles = await new BybitAdapter("TESTNET").getCandles(
-          bot.symbol,
-        );
-        const snapshot = buildMarketInput(candles, [], Date.now(), bot.symbol);
-        const input = buildMarketInput(
+        const candles = await exchangeAdapter(
+          bot.provider,
+          "TESTNET",
+        ).getCandles(bot.symbol, bot.timeframe, 200);
+        const snapshot = buildMarketInput(
           candles,
-          await recentNews(db, snapshot.candleTime + 900000),
+          [],
           Date.now(),
           bot.symbol,
+          bot.timeframe,
+        );
+        const input = buildMarketInput(
+          candles,
+          await recentNews(db, snapshot.candleTime + duration(bot.timeframe)),
+          Date.now(),
+          bot.symbol,
+          bot.timeframe,
         );
         const result = await analyzeBot(
           db,

@@ -156,3 +156,24 @@ test("OKX metadata, partial-order states, base fees and exchange-only execution 
   assert.equal(fill.execFee, "0.00001");
   assert.equal(fill.feeCurrency, "BTC");
 });
+
+test("OKX candle requests map each selectable interval and exclude incomplete candles", async () => {
+  const bars: string[] = [];
+  const adapter = new OKXAdapter("TESTNET", undefined, async (url: any) => {
+    bars.push(new URL(String(url)).searchParams.get("bar")!);
+    return response([
+      ["1000", "10", "12", "9", "11", "100", "0", "0", "0"],
+      ["0", "10", "12", "9", "11", "100", "0", "0", "1"],
+    ]);
+  });
+  for (const interval of ["15", "30", "60"]) {
+    const candles = await adapter.getCandles("BTCUSDT", interval, 200);
+    assert.equal(candles.length, 1);
+    assert.equal(candles[0].time, 0);
+  }
+  assert.deepEqual(bars, ["15m", "30m", "1H"]);
+  await assert.rejects(
+    adapter.getCandles("BTCUSDT", "5"),
+    /UNSUPPORTED_TIMEFRAME/,
+  );
+});

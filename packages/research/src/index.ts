@@ -40,7 +40,9 @@ export const researchConfig = z
     settings: settingsSchema.default(() => settingsSchema.parse({})),
   })
   .refine(
-    (v) => !configurationVeto(v.strategyVersion, v.advancedConfig),
+    (v) =>
+      !["custom-v1.0", "ai-v1.0"].includes(v.strategyVersion) &&
+      !configurationVeto(v.strategyVersion, v.advancedConfig),
     "Invalid strategy configuration",
   );
 export const candleSeries = z

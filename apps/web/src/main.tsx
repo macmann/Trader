@@ -1,3 +1,8 @@
+import {
+  StrategyCreator,
+  StrategyFields,
+  strategyFields,
+} from "./StrategyCreator.tsx";
 import { BotMonitor } from "./BotMonitor.tsx";
 import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
 import { jsonRequestOptions } from "./http.ts";
@@ -15,8 +20,10 @@ type Bot = {
   environment: string;
   symbol: string;
   strategy_version: string;
+  timeframe: string;
   advanced_config: any;
   ai_mode?: string;
+  ai_strategy_config?: { model: string };
   config: {
     capital: number;
     maxTrade: number;
@@ -401,6 +408,7 @@ function App() {
           {[
             "Overview",
             "Bots",
+            "Strategies",
             "Exchanges",
             "Portfolio",
             "Platform",
@@ -593,7 +601,9 @@ function App() {
                           </div>
                           <h2>{b.name}</h2>
                           <p className="muted">
-                            {b.symbol} · Spot · 15m · {b.strategy_version}
+                            {b.symbol} · Spot ·{" "}
+                            {b.timeframe === "60" ? "1h" : `${b.timeframe}m`} ·{" "}
+                            {b.strategy_version}
                           </p>
                           <span
                             className={
@@ -632,7 +642,10 @@ function App() {
                           </div>
                           <p className="muted">
                             SL {b.config.stopLossPct}% · TP{" "}
-                            {b.config.takeProfitPct}% · AI {b.ai_mode ?? "OFF"}
+                            {b.config.takeProfitPct}% · AI{" "}
+                            {b.strategy_version === "ai-v1.0"
+                              ? `STRATEGY · ${b.ai_strategy_config?.model ?? ""}`
+                              : (b.ai_mode ?? "OFF")}
                           </p>
                           <button
                             className="monitor-open"
@@ -705,6 +718,7 @@ function App() {
                   bots={bots}
                 />
               )}
+              {page === "Strategies" && <StrategyCreator request={api} />}
               {page === "Portfolio" && (
                 <TradingDesk bots={bots} request={api} refreshBots={refresh} />
               )}
@@ -998,6 +1012,7 @@ function App() {
                     connectionId: f.get("connectionId"),
                     symbol: f.get("symbol"),
                     strategyVersion: f.get("strategyVersion"),
+                    ...strategyFields(f),
                     config: Object.fromEntries(
                       [
                         "capital",
@@ -1047,14 +1062,7 @@ function App() {
                       <option>SOLUSDT</option>
                     </select>
                   </label>
-                  <label>
-                    Strategy
-                    <select name="strategyVersion">
-                      <option value="trend-v1.0">Trend v1.0</option>
-                      <option value="breakout-v1.0">Breakout v1.0</option>
-                      <option value="dca-v1.0">Bounded DCA v1.0</option>
-                    </select>
-                  </label>
+                  <StrategyFields request={api} />
                 </div>
                 <div className="form-grid">
                   {[

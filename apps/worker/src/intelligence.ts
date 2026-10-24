@@ -1,3 +1,5 @@
+import { duration } from "../../../packages/trading/src/creator.ts";
+import { exchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import {
   runtimeProvider,
   runtimeConfiguration,
@@ -85,8 +87,16 @@ export async function marketContext(
     };
   if (
     !marketInputSchema.safeParse(input).success ||
-    Date.now() - input.candleTime >= 1800000 ||
-    input.candleTime + 900000 > Date.now()
+    Date.now() - input.candleTime >=
+      duration(
+        input.interval === "1h" ? "60" : input.interval.replace("m", ""),
+      ) *
+        2 ||
+    input.candleTime +
+      duration(
+        input.interval === "1h" ? "60" : input.interval.replace("m", ""),
+      ) >
+      Date.now()
   )
     return {
       status: "FAILED",
@@ -184,7 +194,21 @@ export async function marketContext(
     }
     const expiresAt =
       status === "VALID"
-        ? Math.min(input.candleTime + 1800000, createdAt + 900000)
+        ? Math.min(
+            input.candleTime +
+              duration(
+                input.interval === "1h"
+                  ? "60"
+                  : input.interval.replace("m", ""),
+              ) *
+                2,
+            createdAt +
+              duration(
+                input.interval === "1h"
+                  ? "60"
+                  : input.interval.replace("m", ""),
+              ),
+          )
         : createdAt + 30000;
     await db.query(
       "INSERT INTO ai_market_contexts(id,provider,model,prompt_version,input,result,status,error_code,input_tokens,output_tokens,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(id) DO UPDATE SET result=EXCLUDED.result,status=EXCLUDED.status,error_code=EXCLUDED.error_code,created_at=now(),expires_at=EXCLUDED.expires_at,input_tokens=EXCLUDED.input_tokens,output_tokens=EXCLUDED.output_tokens",
@@ -459,8 +483,13 @@ export async function warmAIContext(provider?: AIProvider | null) {
   if (provider === undefined) provider = await runtimeProvider();
   if (!provider) return;
   const workspaces = (await pool.query("SELECT id FROM workspaces")).rows;
-  const activeSymbols = new Set<
-    import("../../../packages/trading/src/index.ts").Symbol
+  const activeSymbols = new Map<
+    string,
+    {
+      symbol: import("../../../packages/trading/src/index.ts").Symbol;
+      timeframe: string;
+      provider: string;
+    }
   >();
   for (const workspace of workspaces) {
     for (const row of await tenant(
@@ -468,25 +497,39 @@ export async function warmAIContext(provider?: AIProvider | null) {
       async (db) =>
         (
           await db.query(
-            "SELECT DISTINCT symbol FROM bots WHERE tenant_id=$1 AND ai_mode<>'OFF' AND status IN ('RUNNING','STARTING')",
+            "SELECT DISTINCT b.symbol,b.timeframe,c.provider FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.tenant_id=$1 AND b.ai_mode<>'OFF' AND b.strategy_version<>'ai-v1.0' AND b.status IN ('RUNNING','STARTING')",
             [workspace.id],
           )
         ).rows,
     ))
-      activeSymbols.add(row.symbol);
+      activeSymbols.set(`${row.provider}:${row.symbol}:${row.timeframe}`, row);
   }
-  for (const symbol of activeSymbols) {
-    const candles = await new BybitAdapter("TESTNET").getCandles(symbol);
-    const snapshot = buildMarketInput(candles, [], Date.now(), symbol);
+  for (const {
+    symbol,
+    timeframe,
+    provider: exchange,
+  } of activeSymbols.values()) {
+    const candles = await exchangeAdapter(exchange, "TESTNET").getCandles(
+      symbol,
+      timeframe,
+      200,
+    );
+    const snapshot = buildMarketInput(
+      candles,
+      [],
+      Date.now(),
+      symbol,
+      timeframe,
+    );
     const db = await intelligencePool.connect();
     let news;
     try {
-      news = await recentNews(db, snapshot.candleTime + 900000);
+      news = await recentNews(db, snapshot.candleTime + duration(timeframe));
     } finally {
       db.release();
     }
     await marketContext(
-      buildMarketInput(candles, news, Date.now(), symbol),
+      buildMarketInput(candles, news, Date.now(), symbol, timeframe),
       provider,
     );
   }

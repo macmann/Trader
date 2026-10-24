@@ -5,6 +5,12 @@ export const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
 export const symbolSchema = z.enum(symbols);
 export type Symbol = z.infer<typeof symbolSchema>;
 export const strategies = [
+  {
+    id: "custom-v1.0",
+    name: "Custom indicator rules",
+    execution: "DEVELOPMENT",
+  },
+  { id: "ai-v1.0", name: "AI Strategy", execution: "DEVELOPMENT" },
   { id: "trend-v1.0", name: "Trend confirmation", execution: "DEVELOPMENT" },
   { id: "breakout-v1.0", name: "Volume breakout", execution: "DEVELOPMENT" },
   { id: "dca-v1.0", name: "Bounded DCA", execution: "DEVELOPMENT" },
@@ -20,6 +26,8 @@ export const strategies = [
   },
 ] as const;
 export const strategySchema = z.enum([
+  "custom-v1.0",
+  "ai-v1.0",
   "trend-v1.0",
   "breakout-v1.0",
   "dca-v1.0",
@@ -168,6 +176,8 @@ export function evaluateStrategy(
 ): { direction: "LONG" | "EXIT" | "NONE"; reasons: string[]; level?: number } {
   if (!Number.isFinite(price) || price <= 0)
     return { direction: "NONE", reasons: ["INVALID_PRICE"] };
+  if (version === "custom-v1.0" || version === "ai-v1.0")
+    return { direction: "NONE", reasons: ["STRATEGY_CONTEXT_REQUIRED"] };
   if (version === "trend-v1.0") return evaluate(candles);
   if (version === "breakout-v1.0") {
     if (candles.length < 21)

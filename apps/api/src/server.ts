@@ -1,3 +1,11 @@
+import {
+  registerStrategyRoutes,
+  validateStrategySelection,
+} from "./strategy-routes.ts";
+import {
+  timeframeSchema,
+  aiStrategyConfig,
+} from "../../../packages/trading/src/creator.ts";
 import { registerBotMonitorRoutes } from "./bot-monitor-routes.ts";
 import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
 import { schemaReady } from "../../../scripts/database-ready.ts";
@@ -573,6 +581,9 @@ app.post("/api/bots", async (req, reply) => {
         config: botConfig,
         symbol: symbolSchema.default("BTCUSDT"),
         strategyVersion: strategySchema.default("trend-v1.0"),
+        timeframe: timeframeSchema.default("15"),
+        customStrategyId: z.uuid().nullable().default(null),
+        aiStrategyConfig: aiStrategyConfig.optional(),
         advancedConfig: advancedConfig.default(() => advancedConfig.parse({})),
       })
       .parse(req.body),
@@ -606,6 +617,17 @@ app.post("/api/bots", async (req, reply) => {
       ) >= entitlement.limits.bots
     )
       return reply.code(409).send({ error: "BOT_PLAN_LIMIT" });
+    try {
+      await validateStrategySelection(
+        db,
+        tid,
+        v.strategyVersion,
+        v.customStrategyId,
+        v.aiStrategyConfig,
+      );
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
     const invalid = configurationVeto(v.strategyVersion, v.advancedConfig);
     if (invalid) return reply.code(400).send({ error: invalid });
     const reasons = allocationReasons(
@@ -627,7 +649,7 @@ app.post("/api/bots", async (req, reply) => {
         .code(400)
         .send({ error: "CONNECTED_TESTNET_EXCHANGE_REQUIRED" });
     await db.query(
-      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id,timeframe,custom_strategy_id,ai_strategy_config) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
       [
         id,
         tid,
@@ -638,6 +660,9 @@ app.post("/api/bots", async (req, reply) => {
         v.strategyVersion,
         JSON.stringify(v.advancedConfig),
         v.marketplaceVersionId ?? null,
+        v.timeframe,
+        v.customStrategyId,
+        JSON.stringify(v.aiStrategyConfig ?? {}),
       ],
     );
     await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [
@@ -730,6 +755,7 @@ registerInstallationRoutes(app);
 registerPlatformRoutes(app);
 registerIntelligenceRoutes(app);
 registerAdvancedRoutes(app);
+registerStrategyRoutes(app);
 const web = resolve(import.meta.dirname, "../../web/dist");
 if (await stat(web).catch(() => null)) {
   const files = new Set(await readdir(resolve(web, "assets")));

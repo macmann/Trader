@@ -223,9 +223,10 @@ export function BotMonitor({
       return `${value.direction ?? ""} · ${[...(value.reason ?? value.reasons ?? [])].join("; ")}`;
     if (key === "decision")
       return `${value.approved ? "APPROVED" : "NOT APPROVED"} · ${(value.reasons ?? []).join("; ")}`;
+    if (key === "indicators") return value ? JSON.stringify(value) : "—";
     if (key === "result")
       return value
-        ? `${value.marketRegime ?? ""} · confidence ${value.confidence ?? "—"} · ${value.recommendation ?? ""} · ${(value.reasons ?? []).join("; ")}`
+        ? `${value.action ?? value.marketRegime ?? ""} · confidence ${value.confidence ?? "—"} · ${value.recommendation ?? ""} · ${(value.reasons ?? []).join("; ")}`
         : "—";
     if (key === "realized_net" && row.side === "Buy")
       return "— (entry fee recorded separately)";
@@ -271,6 +272,9 @@ export function BotMonitor({
     ai: [
       ["created_at", "Analyzed"],
       ["mode", "Mode"],
+      ["provider", "Provider"],
+      ["model", "Model"],
+      ["indicators", "Analyzed indicators"],
       ["status", "Status"],
       ["result", "Analysis"],
       ["error_code", "Failure"],
@@ -308,8 +312,9 @@ export function BotMonitor({
           </div>
           <h2>{b.name}</h2>
           <p>
-            {b.symbol} · Spot · {b.timeframe}m · {b.strategy_version} ·{" "}
-            {b.connection_name}
+            {b.symbol} · Spot ·{" "}
+            {b.timeframe === "60" ? "1h" : `${b.timeframe}m`} ·{" "}
+            {b.strategy_version} · {b.connection_name}
           </p>
         </div>
         <button onClick={onClose}>Close monitor ✕</button>
@@ -436,7 +441,12 @@ export function BotMonitor({
                 `${summary.wins} / ${summary.losses}`,
               ],
               ["Open / unresolved orders", String(snapshot.openOrders.length)],
-              ["AI mode", b.ai_mode ?? "OFF"],
+              [
+                "AI mode",
+                b.strategy_version === "ai-v1.0"
+                  ? `STRATEGY · ${b.ai_strategy_config?.model}`
+                  : (b.ai_mode ?? "OFF"),
+              ],
             ].map(([label, value]) => (
               <div className="metric" key={label}>
                 <span>{label}</span>
@@ -524,8 +534,10 @@ export function BotMonitor({
                   {!active
                     ? "No new entries while inactive"
                     : b.strategy_version.startsWith("trend") ||
-                        b.strategy_version.startsWith("breakout")
-                      ? "On a new closed 15m candle; positions checked between candles"
+                        b.strategy_version.startsWith("breakout") ||
+                        b.strategy_version.startsWith("custom") ||
+                        b.strategy_version.startsWith("ai-")
+                      ? `On a new closed ${b.timeframe === "60" ? "1h" : b.timeframe + "m"} candle; positions checked between candles`
                       : "Each worker cycle when data and account checks are ready"}
                 </dd>
                 <dt>Software stop level (last computation)</dt>
@@ -545,15 +557,16 @@ export function BotMonitor({
                   {s.protection ? text(s.protection.reason) : "Not recorded"} ·
                   not proof of exchange-native stop orders
                 </dd>
-                <dt>Next nominal 15m candle close</dt>
+                <dt>Next nominal candle close</dt>
                 <dd>
                   {active
                     ? when(
                         Math.floor(
-                          new Date(snapshot.serverTime).getTime() / 900000,
+                          new Date(snapshot.serverTime).getTime() /
+                            (Number(b.timeframe) * 60000),
                         ) *
-                          900000 +
-                          900000,
+                          (Number(b.timeframe) * 60000) +
+                          Number(b.timeframe) * 60000,
                       )
                     : "Bot inactive"}
                 </dd>

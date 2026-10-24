@@ -21,6 +21,7 @@ after(async () => {
     ).rows[0]?.id;
     if (tid) {
       for (const table of [
+        "ai_strategy_decisions",
         "trade_cycles",
         "order_events",
         "executions",
@@ -29,6 +30,7 @@ after(async () => {
         "ai_analyses",
         "positions",
         "bots",
+        "custom_strategies",
         "exchange_connections",
         "audit_logs",
         "portfolio_limits",
@@ -43,10 +45,12 @@ after(async () => {
   await admin.end();
 });
 async function account() {
+  const remoteAddress = `10.99.0.${users.length + 1}`;
   const email = `test-${randomUUID()}@example.com`;
   const reg = await app.inject({
     method: "POST",
     url: "/api/auth/register",
+    remoteAddress,
     headers: { origin },
     payload: { email, password },
   });
@@ -82,6 +86,7 @@ async function account() {
   const login = await app.inject({
     method: "POST",
     url: "/api/auth/login",
+    remoteAddress,
     headers: { origin },
     payload: { email, password },
   });
@@ -956,4 +961,133 @@ test("EU connections require explicit live read-only acknowledgement and cannot 
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("strategy creator versions are immutable, tenant scoped and configurable only with no exposure", async () => {
+  const a = await account(),
+    b = await account(),
+    cid = randomUUID();
+  const rules = {
+    entry: [
+      {
+        left: { indicator: "EMA", period: 9 },
+        operator: "GT",
+        right: { indicator: "MA", period: 21 },
+      },
+    ],
+    exit: [
+      { left: { indicator: "RSI", period: 14 }, operator: "LT", right: 40 },
+    ],
+  };
+  const first = await app.inject({
+    method: "POST",
+    url: "/api/strategies",
+    headers: a.headers,
+    payload: { name: "My trend", rules },
+  });
+  assert.equal(first.statusCode, 201, first.body);
+  const id = first.json().id;
+  const second = await app.inject({
+    method: "POST",
+    url: "/api/strategies",
+    headers: a.headers,
+    payload: { name: "My revised trend", previousVersionId: id, rules },
+  });
+  assert.equal(second.statusCode, 201, second.body);
+  assert.equal(second.json().version, 2);
+  const list = await app.inject({ url: "/api/strategies", headers: a.headers });
+  assert.equal(list.json().length, 2);
+  assert.equal(
+    (await app.inject({ url: "/api/strategies", headers: b.headers })).json()
+      .length,
+    0,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/strategies",
+        headers: b.headers,
+        payload: { name: "Other", previousVersionId: id, rules },
+      })
+    ).statusCode,
+    404,
+  );
+  await assert.rejects(
+    tenant(a.tid, (db) =>
+      db.query("UPDATE custom_strategies SET name='changed' WHERE id=$1", [id]),
+    ),
+    /permission denied/,
+  );
+  await tenant(a.tid, (db) =>
+    db.query(
+      "INSERT INTO exchange_connections(id,tenant_id,name,environment,credentials,status,permissions) VALUES($1,$2,'Fixture','TESTNET','none','CONNECTED','{}')",
+      [cid, a.tid],
+    ),
+  );
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/bots",
+    headers: a.headers,
+    payload: {
+      name: "Custom 30m",
+      connectionId: cid,
+      strategyVersion: "custom-v1.0",
+      customStrategyId: id,
+      timeframe: "30",
+      config: {},
+    },
+  });
+  assert.equal(create.statusCode, 201, create.body);
+  const botId = create.json().id;
+  const change = await app.inject({
+    method: "PATCH",
+    url: `/api/bots/${botId}/config`,
+    headers: a.headers,
+    payload: { timeframe: "60", customStrategyId: second.json().id },
+  });
+  assert.equal(change.statusCode, 200, change.body);
+  const monitor = await app.inject({
+    url: `/api/bots/${botId}/monitor`,
+    headers: a.headers,
+  });
+  assert.equal(monitor.json().bot.timeframe, "60");
+  assert.equal(monitor.json().bot.custom_strategy_id, second.json().id);
+  const invalid = await app.inject({
+    method: "POST",
+    url: "/api/bots",
+    headers: b.headers,
+    payload: {
+      name: "Wrong tenant",
+      connectionId: cid,
+      strategyVersion: "custom-v1.0",
+      customStrategyId: id,
+      timeframe: "15",
+      config: {},
+    },
+  });
+  assert.equal(invalid.statusCode, 400, invalid.body);
+  const badInterval = await app.inject({
+    method: "PATCH",
+    url: `/api/bots/${botId}/config`,
+    headers: a.headers,
+    payload: { timeframe: "5" },
+  });
+  assert.equal(badInterval.statusCode, 400);
+  const models = await app.inject({
+    url: "/api/strategies/models",
+    headers: a.headers,
+  });
+  assert.equal(models.statusCode, 200);
+  assert.equal("AI_API_KEY" in models.json(), false);
+  await tenant(a.tid, (db) =>
+    db.query("UPDATE positions SET quantity=0.1 WHERE bot_id=$1", [botId]),
+  );
+  const exposed = await app.inject({
+    method: "PATCH",
+    url: `/api/bots/${botId}/config`,
+    headers: a.headers,
+    payload: { timeframe: "15" },
+  });
+  assert.equal(exposed.statusCode, 409);
 });
