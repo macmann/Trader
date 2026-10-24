@@ -1,3 +1,4 @@
+import { runtimeConfiguration } from "./installation.ts";
 import { mkdir, appendFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 export class MailDeliveryError extends Error {
@@ -8,11 +9,13 @@ export class MailDeliveryError extends Error {
 export function validateMailConfiguration(
   env: NodeJS.ProcessEnv = process.env,
 ) {
-  const mode = env.MAIL_MODE ?? "development";
-  if (!["development", "resend"].includes(mode))
-    throw Error("MAIL_MODE must be development or resend");
-  if (env.NODE_ENV === "production" && mode !== "resend")
-    throw Error("Production requires MAIL_MODE=resend");
+  const mode =
+    env.MAIL_MODE ??
+    (env.NODE_ENV === "production" ? "disabled" : "development");
+  if (!["development", "resend", "disabled"].includes(mode))
+    throw Error("MAIL_MODE must be development, disabled or resend");
+  if (env.NODE_ENV === "production" && mode === "development")
+    throw Error("Production does not support the development outbox");
   if (
     mode === "resend" &&
     (!env.RESEND_API_KEY?.trim() ||
@@ -25,10 +28,17 @@ export async function deliverAccountLink(
   to: string,
   kind: "verify" | "reset",
   url: string,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv | undefined = undefined,
   transport: typeof fetch = fetch,
 ) {
+  env ??= await runtimeConfiguration();
   validateMailConfiguration(env);
+  if (
+    (env.MAIL_MODE ??
+      (env.NODE_ENV === "production" ? "disabled" : "development")) ===
+    "disabled"
+  )
+    throw new MailDeliveryError();
   if ((env.MAIL_MODE ?? "development") === "resend") {
     try {
       const response = await transport("https://api.resend.com/emails", {

@@ -1,3 +1,5 @@
+import { registerInstallationRoutes } from "./installation-routes.ts";
+import { runtimeConfiguration, isOperator } from "./installation.ts";
 import {
   deliverAccountLink,
   validateMailConfiguration,
@@ -90,6 +92,7 @@ app.addHook("onResponse", async (req, reply) => {
 });
 app.addHook("onRequest", async (req, reply) => {
   if (!req.routeOptions.url?.startsWith("/api/")) return;
+  reply.header("Cache-Control", "no-store");
   if (
     !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
     req.headers.origin !== origin &&
@@ -130,6 +133,8 @@ app.addHook("onRequest", async (req, reply) => {
   }
   const publicPaths = [
     "/api/health",
+    "/api/setup/status",
+    "/api/setup",
     "/api/billing/gateway",
     "/api/auth/register",
     "/api/auth/login",
@@ -207,6 +212,14 @@ app.post(
   "/api/auth/register",
   { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
   async (req, reply) => {
+    const mail = await runtimeConfiguration();
+    if (
+      (mail.MAIL_MODE ?? (production ? "disabled" : "development")) ===
+      "disabled"
+    )
+      return reply
+        .code(503)
+        .send({ error: "REGISTRATION_UNAVAILABLE_UNTIL_EMAIL_CONFIGURED" });
     const v = credentials.parse(req.body),
       id = randomUUID(),
       workspace = randomUUID(),
@@ -265,6 +278,7 @@ app.post(
   },
 );
 app.get("/api/auth/me", async (req) => ({
+  platformAdmin: await isOperator(req.identity!.userId),
   role: req.identity!.role,
   tenantId: req.identity!.tenantId,
   email: req.identity!.email,
@@ -664,6 +678,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
         ).rows,
     ),
   );
+registerInstallationRoutes(app);
 registerPlatformRoutes(app);
 registerIntelligenceRoutes(app);
 registerAdvancedRoutes(app);

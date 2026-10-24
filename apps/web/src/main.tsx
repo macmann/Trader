@@ -1,3 +1,4 @@
+import { AdminSettings } from "./AdminSettings.tsx";
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
@@ -60,6 +61,10 @@ function App() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [authMode, setAuthMode] = useState("login"),
+    [setupStatus, setSetupStatus] = useState({
+      needsSetup: false,
+      registrationEnabled: false,
+    }),
     [bots, setBots] = useState<Bot[]>([]),
     [connections, setConnections] = useState<Connection[]>([]),
     [records, setRecords] = useState<any[]>([]),
@@ -89,6 +94,9 @@ function App() {
   useEffect(() => {
     void (async () => {
       try {
+        const installation = await api("/setup/status");
+        setSetupStatus(installation);
+        if (installation.needsSetup) setAuthMode("setup");
         const params = new URLSearchParams(location.search);
         if (params.has("verify")) {
           await api("/auth/verify", "POST", { token: params.get("verify") });
@@ -158,18 +166,34 @@ function App() {
         <div className="auth-card">
           <div className="eyebrow">YOUR STRATEGY. YOUR CONTROL.</div>
           <h1>
-            {authMode === "register"
-              ? "Create your workspace"
-              : authMode === "reset"
-                ? "Choose a new password"
-                : authMode === "forgot"
-                  ? "Reset your password"
-                  : "Welcome back."}
+            {authMode === "setup"
+              ? "Set up your installation"
+              : authMode === "register"
+                ? "Create your workspace"
+                : authMode === "reset"
+                  ? "Choose a new password"
+                  : authMode === "forgot"
+                    ? "Reset your password"
+                    : "Welcome back."}
           </h1>
           <p className="muted">Build and test a repeatable trading strategy.</p>
           {feedback}
           <form
             onSubmit={submit(async (f) => {
+              if (authMode === "setup") {
+                const r = await api("/setup", "POST", {
+                  token: f.get("token"),
+                  email: f.get("email"),
+                  password: f.get("password"),
+                });
+                setSetupStatus({
+                  needsSetup: false,
+                  registrationEnabled: false,
+                });
+                setAuthMode("login");
+                setNotice(r.message);
+                return;
+              }
               if (authMode === "forgot") {
                 const r = await api("/auth/reset-request", "POST", {
                   email: f.get("email"),
@@ -200,6 +224,22 @@ function App() {
               }
             })}
           >
+            {authMode === "setup" && (
+              <label>
+                Installation setup token
+                <input
+                  type="password"
+                  name="token"
+                  required
+                  minLength={64}
+                  maxLength={64}
+                  autoComplete="off"
+                />
+                <small>
+                  Use the setup token supplied by your server administrator.
+                </small>
+              </label>
+            )}
             {authMode !== "reset" && (
               <label>
                 Email
@@ -237,20 +277,34 @@ function App() {
                     : "Continue →"}
             </button>
           </form>
-          <div className="auth-links">
-            <button
-              onClick={() =>
-                setAuthMode(authMode === "register" ? "login" : "register")
-              }
-            >
-              {authMode === "register"
-                ? "Already have an account? Sign in"
-                : "Create an account"}
-            </button>
-            <button onClick={() => setAuthMode("forgot")}>
-              Forgot password?
-            </button>
-          </div>
+          {!setupStatus.needsSetup && (
+            <div className="auth-links">
+              {setupStatus.registrationEnabled && (
+                <>
+                  <button
+                    onClick={() =>
+                      setAuthMode(
+                        authMode === "register" ? "login" : "register",
+                      )
+                    }
+                  >
+                    {authMode === "register"
+                      ? "Already have an account? Sign in"
+                      : "Create an account"}
+                  </button>
+                  <button onClick={() => setAuthMode("forgot")}>
+                    Forgot password?
+                  </button>
+                </>
+              )}
+              {!setupStatus.registrationEnabled && (
+                <p>
+                  Email delivery has not been configured. Public registration
+                  and email recovery are unavailable.
+                </p>
+              )}
+            </div>
+          )}
         </div>
         <p className="muted">
           Funds stay at your exchange. Trading can lose money.
@@ -284,6 +338,7 @@ function App() {
             "Signals",
             "Activity",
             "Security",
+            ...(user.platformAdmin ? ["Admin Settings"] : []),
           ].map((p, i) => (
             <button
               className={page === p ? "selected" : ""}
@@ -527,6 +582,9 @@ function App() {
                     </small>
                   </section>
                 </>
+              )}
+              {page === "Admin Settings" && user.platformAdmin && (
+                <AdminSettings request={api} />
               )}
               {page === "Platform" && (
                 <Platform

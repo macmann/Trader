@@ -1,85 +1,79 @@
-# Deploy on Coolify with shared PostgreSQL
+# Minimal Coolify deployment
 
-The production Compose file runs only **migrate**, **web**, and **worker**. It connects to your existing PostgreSQL server; it creates no database container, database volume, database, login, or password. Both exchange execution and live trading remain disabled. Research, paper replay, accounts and dashboards can be tested first.
+The default deployment includes PostgreSQL, web, worker, one-shot credential initialization and migrations. It needs **only two variables**:
 
-## Prepare PostgreSQL
-
-Ask your database administrator to create a **dedicated database** for Trader on the shared PostgreSQL server, with two dedicated login roles:
-
-- A migration role that owns the database and application objects and can create tables, functions and triggers in its `public` schema.
-- A runtime role with `LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`. It must not own application tables, inherit privileged roles, or be a member of the migration role.
-
-The runtime role must be allowed to connect to the dedicated database. The migration job grants its table/sequence permissions, including append-only audit restrictions; it never creates or changes cluster roles or passwords. Do not point it at a database containing another application's tables: schema migrations and grants operate on `public` in the configured database. The PostgreSQL server itself can be shared.
-
-For example, a database administrator can provision the following, using separately generated passwords supplied securely (replace the placeholders; do not commit them):
-
-```sql
-CREATE ROLE trader_migrator LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD '<migration password>';
-CREATE ROLE trader_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD '<runtime password>';
-CREATE DATABASE trader OWNER trader_migrator;
-REVOKE CONNECT ON DATABASE trader FROM PUBLIC;
-GRANT CONNECT ON DATABASE trader TO trader_migrator, trader_app;
--- Connect to the new trader database before executing these statements:
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT USAGE, CREATE ON SCHEMA public TO trader_migrator;
+```env
+APP_ORIGIN=https://tradingbot.b-connect.site
+APP_ENCRYPTION_KEY=<permanent 64-character hex key>
 ```
 
-Use PostgreSQL 17 or a compatible supported version. Fresh installs support a non-superuser migration owner. Moving an existing installation requires a tested database restore with object ownership assigned to the migration role and the complete migration history preserved. Do not create an empty database as a substitute for migrating existing accounts.
+Generate the key once on a trusted machine with `openssl rand -hex 32`. Store it securely in Coolify and back it up separately. It encrypts integration and exchange credentials in PostgreSQL and must remain outside that database. Replacing it makes existing encrypted secrets unreadable. Database storage alone does not protect keys; encryption, operator authorization and server security do.
 
-## Configure Coolify
+## Deploy
 
-Create an application from `macmann/Trader`, branch `main`, with the **Docker Compose** build pack and Compose location `/compose.coolify.yaml`. Build context is the repository root. Assign your HTTPS domain to **web**, port **3000**. Worker and migrate need no public domain or port. Coolify provides the reverse proxy and HTTPS; the application trusts one immediate proxy hop.
+1. Point `tradingbot.b-connect.site` at your Coolify server.
+2. Add `macmann/Trader`, branch `main`, with the **Docker Compose** build pack and Compose location `/compose.coolify.yaml`. Build context is the repository root.
+3. Add the two variables above. Remove obsolete database URL/password and provider variables from this application's Coolify configuration. The default bundled Compose does not use them.
+4. Assign `https://tradingbot.b-connect.site` to **web**, container port **3000**. Keep direct container access private. Coolify supplies HTTPS and the reverse proxy; the application trusts one immediate proxy hop.
+5. Deploy. Credential initialization completes, PostgreSQL becomes healthy, migrations complete, then web and worker start. The two one-shot services exiting successfully is expected.
 
-The database hostname must be reachable **from all three containers**. `localhost` inside a container refers to that container. For a shared PostgreSQL resource in Coolify, enable the appropriate predefined/shared Docker network in Coolify and use the database's network alias and internal port. Verify the database and all application services join that network. For a separate server, use its reachable private DNS/IP and firewall rules allowing the Coolify server. No database service is added to this Compose file.
+A small test deployment should have about 2 CPU cores, 4 GB RAM available for builds/application/database, and persistent disk. Redis is not needed. PostgreSQL has no published host port. Web/worker run as non-root with read-only roots and temporary writable `/tmp`.
 
-Set these environment variables in Coolify (see `infra/coolify.env.example`):
+Random internal database passwords are generated once and preserved in separate secret volumes. Web/worker receive only the restricted application's credential, not the administrator password. Migrations alone receive both credentials and provision the restricted role. The database administrator credential is also used by the PostgreSQL image for initialization. Generated secrets never appear in initialization logs or Compose environment variables.
 
-| Variable             | Value                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `DATABASE_URL`       | Runtime connection URL, e.g. `postgresql://trader_app:ENCODED_PASSWORD@HOST:5432/trader?sslmode=verify-full` |
-| `DATABASE_ADMIN_URL` | Migration-owner connection URL to the **same server and database**, with a separate login                    |
-| `APP_DATABASE_USER`  | Restricted runtime role name; must match the decoded username in `DATABASE_URL`                              |
-| `APP_ORIGIN`         | Exact HTTPS origin, e.g. `https://tradingbot.b-connect.site`, without trailing slash/path                    |
-| `APP_ENCRYPTION_KEY` | Permanent random 64-character hex encryption key                                                             |
-| `MAIL_FROM`          | Sender on your verified Resend domain                                                                        |
-| `RESEND_API_KEY`     | Resend sending key                                                                                           |
+The encryption key remains in the Coolify secret environment configuration. Do not replace generated credential files to rotate passwords: passwords in PostgreSQL must be changed deliberately and synchronized with those files during a maintenance window.
 
-Generate a new encryption key with `openssl rand -hex 32`, and back it up securely. Replacing it makes stored exchange credentials unreadable. URL-encode usernames and passwords, including special characters such as `@`, `:`, `/`, `#`, `%` and `$`. Enter secrets securely in Coolify; never commit actual connection URLs. Database migration credentials are supplied only to the migration container; web and worker receive only `DATABASE_URL`. The deployment does not rotate passwords.
+## Create the administrator
 
-Set TLS in each URL with `?sslmode=verify-full`. Use `?sslmode=disable` only on a trusted private network when PostgreSQL has no TLS. The old individual `PGHOST`, `PGPORT`, `PGDATABASE`, `PGSSLMODE` and database password variables are no longer required by Compose.
-
-TLS verifies the database certificate and hostname. For a private certificate authority, mount its PEM file read-only into all three services using Coolify configuration and set `NODE_EXTRA_CA_CERTS` to that container path on each service. Do not disable certificate verification to work around an untrusted certificate.
-
-Verify a sending domain in Resend before registering users. Optional settings are `AI_PROVIDER`, `AI_MODEL`, `AI_API_KEY`, `AI_MAX_CALLS_PER_DAY`, `NEWS_ENABLED`, `TELEGRAM_BOT_TOKEN`, and `BILLING_WEBHOOK_SECRET`. Start with AI disabled and news off. `NODE_ENV=production`, `MAIL_MODE=resend`, and both disabled trading flags are fixed in Compose. Redis is not required.
-
-## Deploy and verify
-
-Coolify builds the non-root Node 24 image. The migration job connects to the shared database, applies the schema and checksum-verified migrations, and refreshes runtime grants. Web and worker start only after it exits successfully. There is no database-container health dependency; the shared server must already be available. A failed migration blocks startup: check its sanitized error and database logs without deleting data or modifying applied migration files.
-
-Web health checks verify `/api/health` and database access. Worker health checks require recent loop progress. Application crashes restart automatically; an unhealthy running container may need operator action. Containers use read-only root filesystems and writable temporary `/tmp`. No database data is stored in application containers. The image excludes repository secrets, `.env`, local mail and Git metadata.
-
-After deployment:
-
-- Confirm web/worker become healthy and `/api/health` reports `status: ok` and `liveTrading: false`.
-- Register, verify email, sign in, and exercise password reset over HTTPS. Production uses Resend; fixture tests do not verify your DNS or real email delivery.
-- Open Platform → Research and Paper trading. Uploaded-candle replay needs no exchange credentials. Automatic paper feeds require public OKX access.
-- Add a second verified user and check workspace roles and tenant isolation.
-- Check worker logs show `executionEnabled: false` and `liveEnabled: false`.
-
-If verification delivery fails, fix sender/key/network, then sign in and resend verification. Password-reset responses remain generic. Never put API keys or verification links in logs or chat.
-
-For later read-only exchange checks, connect dedicated Testnet accounts through the UI, then run in the web terminal:
+After web becomes healthy, open its **Terminal** in Coolify and run:
 
 ```sh
-node --use-env-proxy --import tsx scripts/testnet-preflight.ts
+cat /run/app-secrets/setup-token
 ```
 
-Reports are written to temporary `/tmp`. Bybit Testnet needs permitted outbound access to `api-testnet.bybit.com` and `stream-testnet.bybit.com`; Resend needs `api.resend.com`. Exchange regional restrictions must be respected.
+This is an intentional server-administrator operation. Copy the token privately into the first-run setup form at your HTTPS domain, choose your email and a password of at least 12 characters, then sign in. Do not put the token in a URL, chat, screenshot or log.
 
-## Backups and updates
+Setup requires the high-entropy token and a fresh database; it does not promote whoever first visits or registers. Concurrent claims are serialized, and only one can succeed. The token's database hash is consumed on success. The initial platform administrator is explicitly verified by this server-authorized process, so email delivery is unnecessary for installation. All later public users still require verification. Workspace owners/admins do not automatically become platform administrators.
 
-Manage persistence and backups on the shared PostgreSQL service, separately from the Coolify application. Back up the dedicated Trader database and encryption key securely, and test restoration. Deleting/redeploying application containers does not delete the external database.
+The original token file may remain in its protected volume for repeatable deployment, but cannot claim setup again. If the database already has users and no platform administrator, setup refuses to create another account. An existing deployment needs an intentional operator assignment by the database administrator after confirming the account identity; do not delete accounts or reset setup to work around this guard.
 
-Take a backup before updates. Migrations serialize initialization and validate checksums; application rollback does not roll back the database. Rotate database passwords on the shared server, update the matching Coolify secret and redeploy affected services together. The deployment does not alter other databases or role passwords.
+## Configure integrations later
 
-Local verification covers migration repeatability, restricted roles, shared-server setup, and application tests. Your Coolify networking, production database TLS, DNS and actual email/exchange access still need deployment checks.
+Open **Admin Settings** after signing in as the platform administrator:
+
+- **Email:** choose Resend, supply a sender on your verified domain and a sending API key. Public registration becomes available once configured. Real delivery/DNS must be verified by the operator; saving configuration does not prove delivery works.
+- **AI:** choose provider/model, add its key and set the daily call budget. AI is disabled initially. News analysis is optional and initially off.
+- **Telegram:** add the bot token here, then configure each workspace's chat/preferences under Platform notifications.
+- **Billing webhook:** optionally configure the signed gateway secret. This does not turn on payment collection.
+
+Secrets are encrypted with AES-256-GCM and context binding. The settings page returns only configuration indicators for keys and tokens. Empty replacement inputs preserve saved secrets; explicit clear checkboxes remove them. Each save requires the platform administrator's current password, session authentication, CSRF and origin checks. Audit records contain changed field names, never secret values. Settings are installation-wide and can be used by private server workers; they are not tenant-owned API keys. Customer exchange credentials remain scoped to their own tenants.
+
+New requests and worker cycles read current settings. In-flight provider requests may finish with the configuration they already loaded. Disabling email closes public registration; reset requests still return generic responses but no email can be sent. Production never uses the development mail outbox. Keep a working administrator session and password until email recovery is configured. No email/AI/Telegram key is needed to boot or use paper replay.
+
+## Verify
+
+- Confirm web/worker become healthy and `/api/health` reports `status: ok`, `liveTrading: false`.
+- Complete setup, sign in, and check Admin Settings is restricted to the installation administrator.
+- Try **Platform → Research and Paper trading** with uploaded candles; no exchange credentials are required. Automatic paper feeds require permitted public OKX access.
+- After configuring Resend, register a second account, verify its email, test reset delivery and check tenant isolation. Resend needs outbound `api.resend.com`.
+- Check worker logs show execution and live trading disabled. Health does not certify exchange connectivity, strategy profitability or order protection.
+
+For later read-only Bybit Testnet acceptance, connect dedicated Testnet credentials through the app and run in the web terminal:
+
+```sh
+node --use-env-proxy --import tsx scripts/container-entrypoint.ts preflight
+```
+
+This reports readiness, never submits orders, and cannot certify authenticated trading acceptance. Bybit Testnet needs permitted access to `api-testnet.bybit.com` and `stream-testnet.bybit.com`; respect exchange regional restrictions.
+
+## Persistence, updates and recovery
+
+Back up the `postgres-data`, `admin-secrets` and `app-secrets` volumes and the encryption key securely, with restricted access. Test restoration of both database and secrets. Never use `docker compose down -v` on a deployment you want to keep. Do not regenerate credential volumes while retaining an initialized database: PostgreSQL keeps the old passwords. Application redeployment preserves all three volumes and does not rotate credentials or reopen setup.
+
+Take a database backup before updates. Migration checksums reject edited history, and migrations serialize initialization. Application rollback does not roll back the database. Failed initialization/migration prevents app startup; inspect sanitized service logs without printing credentials.
+
+Existing external/shared-database deployments are not automatically migrated. Back up the old database and encryption key, restore into the bundled PostgreSQL database with appropriate ownership/roles and intact migration history, then deliberately assign a platform operator to the verified account using a database-administrator connection. Never switch to an empty bundled database and assume it contains your old accounts. Keep the old deployment available until restoration is verified.
+
+For administrator account recovery without email, use an authenticated database-administrator maintenance procedure to reset the specific account's Argon2id password hash and revoke its sessions. There is no public recovery bypass or permanent setup backdoor. Re-enabling first-run setup on a populated installation is intentionally unsupported.
+
+Builds use the existing non-root Node 24 image. Normal Coolify builds need no custom CA; managed build proxies can mount the optional BuildKit `proxy_ca` secret while preserving TLS verification. Local checks do not validate your real Coolify routing, DNS, email delivery or exchange connectivity.

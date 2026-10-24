@@ -1,3 +1,4 @@
+import { runtimeConfiguration } from "./installation.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
@@ -218,7 +219,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     })),
   );
   app.post("/api/billing/gateway", async (req, reply) => {
-    const key = process.env.BILLING_WEBHOOK_SECRET,
+    const key = (await runtimeConfiguration()).BILLING_WEBHOOK_SECRET,
       timestamp = String(req.headers["x-billing-timestamp"] ?? ""),
       sig = String(req.headers["x-billing-signature"] ?? ""),
       body = billingSchema.parse(req.body);
@@ -720,7 +721,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
   app.get("/api/notifications/settings", async (req) =>
     tenant(req.identity!.tenantId, async (db) => ({
       telegramConfigured:
-        !!process.env.TELEGRAM_BOT_TOKEN ||
+        !!(await runtimeConfiguration(db)).TELEGRAM_BOT_TOKEN ||
         process.env.TELEGRAM_NOTIFICATIONS_CONFIGURED === "true",
       ...(
         await db.query(

@@ -4,7 +4,7 @@ export async function configureLocalRole(db: pg.Client) {
     "DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='trader_app') THEN CREATE ROLE trader_app LOGIN PASSWORD 'local-app-development-only' NOSUPERUSER NOBYPASSRLS; END IF; END $$",
   );
   await db.query(
-    "GRANT USAGE ON SCHEMA public TO trader_app; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO trader_app; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO trader_app; REVOKE UPDATE,DELETE ON audit_logs,order_events,trade_cycles,marketplace_versions,marketplace_evidence,research_runs,usage_records,billing_events FROM trader_app; REVOKE INSERT,UPDATE,DELETE ON platform_controls,schema_migrations FROM trader_app",
+    "GRANT USAGE ON SCHEMA public TO trader_app; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO trader_app; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO trader_app; REVOKE UPDATE,DELETE ON audit_logs,order_events,trade_cycles,marketplace_versions,marketplace_evidence,research_runs,usage_records,billing_events FROM trader_app; REVOKE INSERT,UPDATE,DELETE ON platform_controls,schema_migrations,platform_operators,installation_setup FROM trader_app; REVOKE SELECT ON installation_setup FROM trader_app; GRANT EXECUTE ON FUNCTION claim_installation(text,uuid,text,text,uuid) TO trader_app",
   );
 }
 
@@ -38,6 +38,6 @@ export async function configureDeploymentRole(db: pg.Client, role: string) {
     );
   const identifier = db.escapeIdentifier(role);
   await db.query(
-    `GRANT USAGE ON SCHEMA public TO ${identifier}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${identifier}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${identifier}; REVOKE UPDATE,DELETE ON audit_logs,order_events,trade_cycles,marketplace_versions,marketplace_evidence,research_runs,usage_records,billing_events FROM ${identifier}; REVOKE INSERT,UPDATE,DELETE ON platform_controls,schema_migrations FROM ${identifier}`,
+    `GRANT USAGE ON SCHEMA public TO ${identifier}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${identifier}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${identifier}; REVOKE UPDATE,DELETE ON audit_logs,order_events,trade_cycles,marketplace_versions,marketplace_evidence,research_runs,usage_records,billing_events FROM ${identifier}; REVOKE INSERT,UPDATE,DELETE ON platform_controls,schema_migrations,platform_operators,installation_setup FROM ${identifier}; REVOKE SELECT ON installation_setup FROM ${identifier}; GRANT EXECUTE ON FUNCTION claim_installation(text,uuid,text,text,uuid) TO ${identifier}`,
   );
 }

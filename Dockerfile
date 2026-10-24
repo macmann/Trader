@@ -27,7 +27,7 @@ COPY --from=build --chown=node:node /app/apps/web/package.json ./apps/web/packag
 COPY --from=build --chown=node:node /app/packages ./packages
 COPY --from=build --chown=node:node /app/infra/schema.sql ./infra/schema.sql
 COPY --from=build --chown=node:node /app/infra/migrations ./infra/migrations
-COPY --from=build --chown=node:node /app/scripts/migrations.ts /app/scripts/roles.ts /app/scripts/deploy-migrate.ts /app/scripts/container-health.ts /app/scripts/testnet-preflight.ts ./scripts/
+COPY --from=build --chown=node:node /app/scripts/migrations.ts /app/scripts/roles.ts /app/scripts/deploy-migrate.ts /app/scripts/container-health.ts /app/scripts/testnet-preflight.ts /app/scripts/container-entrypoint.ts /app/scripts/installation-secrets.ts ./scripts/
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=8s --start-period=30s --retries=5 CMD ["node", "--import", "tsx", "scripts/container-health.ts"]

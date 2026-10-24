@@ -58,22 +58,25 @@ Phases 4–5 add organization roles, plan quotas and a signed billing gateway, O
 
 Run `npm run testnet:preflight` for a read-only, sanitized readiness report. It never submits orders and cannot certify external acceptance. See [Testnet acceptance and reliability](docs/testnet-acceptance.md).
 
-For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/compose.coolify.yaml`. It connects to your existing shared PostgreSQL server and includes one-shot migrations, a restricted application role, production email, web/worker health checks and disabled trading defaults.
+For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/compose.coolify.yaml`. PostgreSQL, internal database credentials, migrations and health checks are included. Trading stays disabled.
 
-## Coolify mandatory environment
-
-Deploy `/compose.coolify.yaml` with these variables in Coolify:
+## Coolify: only two required variables
 
 ```env
 APP_ORIGIN=https://tradingbot.b-connect.site
 APP_ENCRYPTION_KEY=<permanent 64-character hex key>
-DATABASE_URL=postgresql://trader_app:ENCODED_PASSWORD@HOST:5432/trader?sslmode=verify-full
-DATABASE_ADMIN_URL=postgresql://trader_migrator:ENCODED_PASSWORD@HOST:5432/trader?sslmode=verify-full
-APP_DATABASE_USER=trader_app
-MAIL_FROM=Trading Bot <accounts@b-connect.site>
-RESEND_API_KEY=<Resend sending key>
 ```
 
-Generate the encryption key once with `openssl rand -hex 32` and keep a secure backup. Replace placeholders and URL-encode database usernames/passwords. Both URLs must point to the same dedicated Trader database on your shared PostgreSQL server. Pre-create separate migration-owner and restricted runtime roles; `APP_DATABASE_USER` must match the username in `DATABASE_URL`. The runtime role must not own tables or bypass RLS. Only the migration service receives `DATABASE_ADMIN_URL`.
+Generate the encryption key once with `openssl rand -hex 32` and back it up securely. Set the Compose location to `/compose.coolify.yaml`, assign your HTTPS domain to **web** port **3000**, and deploy. No database URL, database passwords or external API keys are required. Internal database passwords are generated into persistent Docker secret volumes; PostgreSQL has its own persistent data volume and no published port.
 
-Use a database hostname reachable from containers. For a trusted private database network without TLS, use `sslmode=disable` in both URLs. Individual `PG*` fields are unnecessary. Verify `b-connect.site` in Resend before using the example sender. Assign `https://tradingbot.b-connect.site` to the **web** service on container port **3000** and point DNS to your Coolify server. Trading stays disabled. See [the full provisioning and deployment guide](docs/coolify.md).
+After web and worker become healthy, open the **web** service terminal in Coolify and retrieve the one-time installation token:
+
+```sh
+cat /run/app-secrets/setup-token
+```
+
+Open your domain and use that token to create the initial platform administrator. This server-authorized account can sign in without email delivery; ordinary users still require email verification. Setup closes permanently after initialization. Keep the token private and do not paste it into chat or logs.
+
+Open **Admin Settings** to configure Resend sender/key, AI provider/model/key and daily budget, news, Telegram token, or billing webhook secret. These values are encrypted in PostgreSQL using the external master key. Saved secrets are never returned to the browser; replacing or clearing one requires your account password. New requests and worker cycles use saved settings without redeployment. Public registration and email recovery are unavailable until Resend is configured. Verify your sending domain before enabling it.
+
+Back up **all three volumes** (`postgres-data`, `admin-secrets`, `app-secrets`) and `APP_ENCRYPTION_KEY`; never delete volumes on redeployment. Existing installations using an external database need an intentional database restore/migration before switching to the bundled deployment. This change does not automatically transfer your old database. See [the full deployment, backup and recovery guide](docs/coolify.md).
