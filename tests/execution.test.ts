@@ -58,10 +58,12 @@ class Broker extends BybitAdapter {
       ],
     };
   }
-  override async getCandles(_symbol: string) {
-    const last = Math.floor(Date.now() / 900000) * 900000 - 900000;
-    return Array.from({ length: 60 }, (_, i) => ({
-      time: last - (59 - i) * 900000,
+  candleOffset = 0;
+  override async getCandles(_symbol: string, interval = "15", limit = 60) {
+    const ms = Number(interval) * 60000;
+    const last = Math.floor((Date.now() + this.candleOffset) / ms) * ms - ms;
+    return Array.from({ length: limit }, (_, i) => ({
+      time: last - (limit - 1 - i) * ms,
       open: this.price,
       high: this.price + 1,
       low: this.price - 1,
@@ -178,6 +180,7 @@ const fixtures: Array<{ uid: string; tid: string }> = [];
 after(async () => {
   for (const f of fixtures) {
     for (const table of [
+      "ai_strategy_decisions",
       "trade_cycles",
       "order_events",
       "executions",
@@ -186,6 +189,7 @@ after(async () => {
       "ai_analyses",
       "positions",
       "bots",
+      "custom_strategies",
       "portfolio_limits",
       "exchange_connections",
       "audit_logs",
@@ -904,4 +908,168 @@ test("malformed account snapshots cannot establish an inventory baseline", () =>
   ])
     assert.throws(() => assetTotal(value, "BTC"));
   assert.equal(assetTotal({ list: [{ coin: [] }] }, "BTC").toFixed(), "0");
+});
+
+test("custom strategies execute saved rules on the selected candle interval and retain exact version attribution", async () => {
+  const f = await fixture(),
+    custom = randomUUID();
+  const rules = {
+    entry: [
+      { left: { indicator: "RSI", period: 14 }, operator: "GT", right: 40 },
+    ],
+    exit: [
+      { left: { indicator: "PRICE", period: 14 }, operator: "LT", right: 99 },
+    ],
+  };
+  await tenant(f.tid, async (db) => {
+    await db.query(
+      "INSERT INTO custom_strategies(id,tenant_id,family_id,name,version,rules) VALUES($1,$2,$1,'Custom test',1,$3)",
+      [custom, f.tid, JSON.stringify(rules)],
+    );
+    await db.query(
+      "UPDATE bots SET strategy_version='custom-v1.0',custom_strategy_id=$1,timeframe='30' WHERE id=$2",
+      [custom, f.bid],
+    );
+  });
+  await run(f);
+  await run(f);
+  assert.equal(f.broker.creates, 1);
+  assert.ok(Number((await rows(f)).position.quantity) > 0);
+  const ms = 1800000;
+  f.broker.candleOffset = ms;
+  f.broker.price = 98;
+  await run(f, {
+    now: () => Date.now() + ms,
+    marketReceivedAt: Date.now() + ms,
+    afterIntent: async () => {
+      await admin.query(
+        "UPDATE orders SET created_at=$1 WHERE bot_id=$2 AND state='INTERNAL_CREATED'",
+        [new Date(Date.now() + ms), f.bid],
+      );
+    },
+  });
+  assert.equal(f.broker.creates, 2);
+  await tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker));
+  assert.equal(Number((await rows(f)).position.quantity), 0);
+  const signal = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query(
+          "SELECT * FROM signals WHERE bot_id=$1 ORDER BY created_at LIMIT 1",
+          [f.bid],
+        )
+      ).rows[0],
+  );
+  assert.equal(signal.data.customStrategyId, custom);
+  assert.equal(signal.strategy_version, `custom-v1.0:${custom}`);
+  assert.ok(
+    (await rows(f)).orders.every(
+      (o) => o.strategy_version === `custom-v1.0:${custom}`,
+    ),
+  );
+});
+
+test("AI Strategy buys and exits hourly, calls once per candle, and never bypasses allocation", async () => {
+  const f = await fixture();
+  let calls = 0,
+    action = "BUY";
+  const provider: any = {
+    id: "test",
+    model: "test-model",
+    analyzeTrade: async (input: any) => {
+      calls++;
+      assert.equal(input.interval, "60");
+      assert.equal(input.indicators.RSI14, 50);
+      return {
+        value: { action, confidence: 95, reasons: ["Test market decision"] },
+        inputTokens: 10,
+        outputTokens: 10,
+      };
+    },
+  };
+  await tenant(f.tid, (db) =>
+    db.query(
+      "UPDATE bots SET strategy_version='ai-v1.0',timeframe='60',ai_strategy_config=$1 WHERE id=$2",
+      [JSON.stringify({ model: "test-model", minConfidence: 70 }), f.bid],
+    ),
+  );
+  await run(f, { aiProvider: provider });
+  await run(f, { aiProvider: provider });
+  assert.equal(calls, 1);
+  assert.equal(f.broker.creates, 1);
+  const state = await rows(f);
+  assert.ok(Number(state.position.cost) <= 20);
+  const ms = 3600000;
+  f.broker.candleOffset = ms;
+  action = "EXIT";
+  await run(f, {
+    aiProvider: provider,
+    now: () => Date.now() + ms,
+    marketReceivedAt: Date.now() + ms,
+    afterIntent: async () => {
+      await admin.query(
+        "UPDATE orders SET created_at=$1 WHERE bot_id=$2 AND state='INTERNAL_CREATED'",
+        [new Date(Date.now() + ms), f.bid],
+      );
+    },
+  });
+  await tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker));
+  assert.equal(calls, 2);
+  assert.equal(f.broker.creates, 2);
+  assert.equal(Number((await rows(f)).position.quantity), 0);
+  const decisions = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query(
+          "SELECT * FROM ai_strategy_decisions WHERE bot_id=$1 ORDER BY candle_time",
+          [f.bid],
+        )
+      ).rows,
+  );
+  assert.deepEqual(
+    decisions.map((d) => d.result.action),
+    ["BUY", "EXIT"],
+  );
+});
+
+test("invalid AI fails closed while hard stop exits keep working without AI", async () => {
+  const f = await fixture();
+  await run(f);
+  await run(f);
+  await tenant(f.tid, (db) =>
+    db.query(
+      "UPDATE bots SET strategy_version='ai-v1.0',ai_strategy_config=$1,last_candle=NULL WHERE id=$2",
+      [JSON.stringify({ model: "test-model", minConfidence: 70 }), f.bid],
+    ),
+  );
+  let calls = 0;
+  const provider: any = {
+    id: "test",
+    model: "test-model",
+    analyzeTrade: async () => {
+      calls++;
+      return {
+        value: {
+          action: "BUY",
+          confidence: 100,
+          reasons: ["bad"],
+          quantity: 999,
+        },
+        inputTokens: 1,
+        outputTokens: 1,
+      };
+    },
+  };
+  await run(f, { aiProvider: provider });
+  await run(f, { aiProvider: provider });
+  assert.equal(calls, 1);
+  assert.equal(f.broker.creates, 1);
+  f.broker.price = 60;
+  await run(f, { aiProvider: provider });
+  assert.equal(calls, 1);
+  assert.equal(f.broker.creates, 2);
+  await tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker));
+  assert.equal(Number((await rows(f)).position.quantity), 0);
 });

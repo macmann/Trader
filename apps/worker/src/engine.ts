@@ -1,3 +1,10 @@
+import { aiStrategy } from "./ai-strategy.ts";
+import {
+  duration,
+  evaluateRules,
+  rulesSchema,
+  validateCandles,
+} from "../../../packages/trading/src/creator.ts";
 import { assetTotal, checkInventory } from "./inventory.ts";
 import {
   recordObservation,
@@ -245,6 +252,7 @@ export async function tick(
   botId: string,
   override?: {
     adapter: ExchangeAdapter;
+    aiProvider?: import("../../../packages/ai-core/src/index.ts").AIProvider;
     privateReady: boolean;
     marketReceivedAt: number;
     executionEnabled: boolean;
@@ -475,9 +483,10 @@ export async function tick(
       observation.price = price;
       observation.priceAt = now;
       report("EVALUATING");
-      const candles = (await adapter.getCandles(row.symbol)).filter(
-          (c) => c.time + 900000 <= now,
-        ),
+      const candleMs = duration(row.timeframe);
+      const candles = (
+          await adapter.getCandles(row.symbol, row.timeframe, 200)
+        ).filter((c) => c.time + candleMs <= now),
         last = candles.at(-1);
       if (!last) {
         report("WAITING_CANDLE", ["NO_CLOSED_CANDLE"]);
@@ -516,9 +525,11 @@ export async function tick(
         [protectionState.highWatermark, botId, tid],
       );
       const stop = protectionState.exit;
-      const mode = (row.ai_mode ?? "OFF") as AIMode;
+      const mode = (
+        row.strategy_version === "ai-v1.0" ? "OFF" : (row.ai_mode ?? "OFF")
+      ) as AIMode;
       const news =
-        mode === "OFF" ? [] : await recentNews(db, last.time + 900000);
+        mode === "OFF" ? [] : await recentNews(db, last.time + candleMs);
       const newsRevision = contextKey(
         { id: "news", model: "high-impact" },
         news.filter((n) => (n.impact ?? 0) >= 0.8),
@@ -540,7 +551,13 @@ export async function tick(
             tid,
             botId,
             mode,
-            buildMarketInput(candles, news, Date.now(), row.symbol),
+            buildMarketInput(
+              candles,
+              news,
+              Date.now(),
+              row.symbol,
+              row.timeframe,
+            ),
             "NONE",
             false,
             await runtimeProvider(db),
@@ -554,7 +571,12 @@ export async function tick(
         }
         return;
       }
-      const signal = stop
+      let signal: {
+        direction: "LONG" | "EXIT" | "NONE";
+        reasons: string[];
+        level?: number;
+        [key: string]: unknown;
+      } = stop
         ? ({ direction: "EXIT", reasons: [protectionState.reason] } as const)
         : evaluateStrategy(
             row.strategy_version,
@@ -573,6 +595,39 @@ export async function tick(
             price,
             now,
           );
+      if (!stop && ["custom-v1.0", "ai-v1.0"].includes(row.strategy_version)) {
+        if (!validateCandles(candles, row.timeframe, now)) {
+          report("WAITING_CANDLE", ["MARKET_DATA_STALE_OR_INVALID"]);
+          return;
+        }
+        if (row.strategy_version === "custom-v1.0") {
+          const custom = (
+            await db.query(
+              "SELECT rules,version,name FROM custom_strategies WHERE id=$1 AND tenant_id=$2",
+              [row.custom_strategy_id, tid],
+            )
+          ).rows[0];
+          if (!custom) throw Error("CUSTOM_STRATEGY_REQUIRED");
+          signal = {
+            ...evaluateRules(
+              rulesSchema.parse(custom.rules),
+              candles,
+              positionQty.gt(0),
+            ),
+            customStrategyId: row.custom_strategy_id,
+            customVersion: custom.version,
+          };
+        } else
+          signal = await aiStrategy(
+            db,
+            tid,
+            row,
+            candles,
+            { quantity: Number(p.quantity), cost: Number(p.cost) },
+            now,
+            override?.aiProvider,
+          );
+      }
       const balance = await adapter.getBalances(),
         coins = balance.list?.[0]?.coin ?? [],
         available = Number(
@@ -628,7 +683,8 @@ export async function tick(
         liveEnabled: false,
         connected: true,
         fresh:
-          now - last.time < 1800000 && now - runtime.marketReceivedAt < 45000,
+          now - last.time < candleMs * 2 &&
+          now - runtime.marketReceivedAt < 45000,
         reconciled: true,
         globalStop: controls.execution_stopped,
         exposure: Number(p.cost),
@@ -666,7 +722,13 @@ export async function tick(
               tid,
               botId,
               mode,
-              buildMarketInput(candles, news, Date.now(), row.symbol),
+              buildMarketInput(
+                candles,
+                news,
+                Date.now(),
+                row.symbol,
+                row.timeframe,
+              ),
               signal.direction,
               strategyAllowed,
               await runtimeProvider(db),
@@ -691,6 +753,10 @@ export async function tick(
       );
       const exit = signal.direction === "EXIT" && positionQty.gt(0),
         buy = entryApproval.allowed;
+      const strategyVersionTag =
+        row.strategy_version === "custom-v1.0"
+          ? `${row.strategy_version}:${row.custom_strategy_id}`
+          : row.strategy_version;
       const signalId = randomUUID();
       const inserted = await db.query(
         "INSERT INTO signals(id,tenant_id,bot_id,candle_time,strategy_version,data,decision,ai_analysis_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id",
@@ -699,7 +765,7 @@ export async function tick(
           tid,
           botId,
           stop || priceDriven ? now : last.time,
-          row.strategy_version,
+          strategyVersionTag,
           JSON.stringify({
             ...signal,
             symbol: row.symbol,
@@ -708,8 +774,11 @@ export async function tick(
           JSON.stringify({
             approved: exit || buy,
             reasons: exit ? [] : entryApproval.reasons,
-            aiMode: mode,
-            aiReason: analysis.gate.reason,
+            aiMode: row.strategy_version === "ai-v1.0" ? "STRATEGY" : mode,
+            aiReason:
+              row.strategy_version === "ai-v1.0"
+                ? "AI_STRATEGY_DECISION"
+                : analysis.gate.reason,
             positionSizeModifier: analysis.gate.modifier,
           }),
           analysis.id,
@@ -796,7 +865,7 @@ export async function tick(
           type === "LIMIT"
             ? new Date(now + advanced.limitTimeToLiveMinutes * 60000)
             : null,
-          row.strategy_version,
+          strategyVersionTag,
           "level" in signal ? signal.level : null,
           p.strategy_cycle,
         ],

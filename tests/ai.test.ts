@@ -372,3 +372,74 @@ test("provider bounds response bytes before parsing", async () => {
   );
   await assert.rejects(provider.analyzeMarket({} as any), /AI_RESULT_INVALID/);
 });
+
+test("AI Strategy provider requests validated trade decisions with a dedicated prompt", async () => {
+  let request: any;
+  const provider = new StructuredProvider(
+    "openai",
+    "test-model",
+    "fixture",
+    async (_url, init) => {
+      request = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: {
+                content: JSON.stringify({
+                  action: "EXIT",
+                  confidence: 82,
+                  reasons: ["Momentum weakened"],
+                }),
+              },
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+      );
+    },
+  );
+  const result = await provider.analyzeTrade({
+    symbol: "BTCUSDT",
+    indicators: { rsi14: 30 },
+    position: { quantity: 0.01 },
+  });
+  assert.equal(result.value.action, "EXIT");
+  assert.match(request.messages[0].content, /BUY, HOLD or EXIT/);
+  assert.equal(
+    request.response_format.json_schema.schema.additionalProperties,
+    false,
+  );
+});
+
+test("market snapshots use the selected interval without incomplete candles or stale context", () => {
+  for (const [timeframe, label] of [
+    ["15", "15m"],
+    ["30", "30m"],
+    ["60", "1h"],
+  ]) {
+    const ms = Number(timeframe) * 60000,
+      now = Math.floor(Date.now() / ms) * ms + 1000;
+    const candles = Array.from({ length: 60 }, (_, i) => ({
+      time: Math.floor(now / ms) * ms - (60 - i) * ms,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      volume: 100,
+    }));
+    const snapshot = buildMarketInput(
+      [...candles, { ...candles[0], time: Math.floor(now / ms) * ms }],
+      [],
+      now,
+      "BTCUSDT",
+      timeframe,
+    );
+    assert.equal(snapshot.interval, label);
+    assert.equal(snapshot.candleTime, candles.at(-1)!.time);
+    assert.throws(() =>
+      buildMarketInput(candles, [], now + ms, "BTCUSDT", timeframe),
+    );
+  }
+});

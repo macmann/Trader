@@ -1,3 +1,8 @@
+import { validateStrategySelection } from "./strategy-routes.ts";
+import {
+  timeframeSchema,
+  aiStrategyConfig,
+} from "../../../packages/trading/src/creator.ts";
 import { testnetExecutionEnabled } from "./installation.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -23,7 +28,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
     symbols,
     strategies,
     marketTypes: ["SPOT"],
-    timeframes: ["15m"],
+    timeframes: ["15m", "30m", "1h"],
     derivativesSupported: false,
     advancedExecutionSupported: true,
     executionEnabled: await testnetExecutionEnabled(),
@@ -73,6 +78,9 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           name: z.string().min(1).max(80).optional(),
           symbol: symbolSchema.optional(),
           strategyVersion: strategySchema.optional(),
+          timeframe: timeframeSchema.optional(),
+          customStrategyId: z.uuid().nullable().optional(),
+          aiStrategyConfig: aiStrategyConfig.optional(),
           config: botConfig.optional(),
           advancedConfig: advancedConfig.optional(),
         })
@@ -109,6 +117,16 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           v.advancedConfig ?? advancedConfig.parse(bot.advanced_config),
         symbol = v.symbol ?? bot.symbol,
         strategy = v.strategyVersion ?? bot.strategy_version;
+      const customId =
+        strategy === "custom-v1.0"
+          ? (v.customStrategyId ?? bot.custom_strategy_id)
+          : null;
+      const aiConfig = v.aiStrategyConfig ?? bot.ai_strategy_config;
+      try {
+        await validateStrategySelection(db, tid, strategy, customId, aiConfig);
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
       const invalid = configurationVeto(strategy, advanced);
       if (invalid) return reply.code(400).send({ error: invalid });
       snapshot.allocated -= Number(bot.config.capital);
@@ -127,13 +145,24 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           .code(409)
           .send({ error: "PORTFOLIO_ALLOCATION_REJECTED", reasons });
       await db.query(
-        "UPDATE bots SET marketplace_version_id=NULL,name=$1,symbol=$2,strategy_version=$3,config=$4,advanced_config=$5,last_candle=NULL,last_ai_news=NULL WHERE id=$6 AND tenant_id=$7",
+        "UPDATE bots SET marketplace_version_id=NULL,name=$1,symbol=$2,strategy_version=$3,config=$4,advanced_config=$5,custom_strategy_id=$8,last_candle=NULL,last_ai_news=NULL WHERE id=$6 AND tenant_id=$7",
         [
           v.name ?? bot.name,
           symbol,
           strategy,
           JSON.stringify(config),
           JSON.stringify(advanced),
+          id,
+          tid,
+          customId,
+        ],
+      );
+      await db.query(
+        "UPDATE bots SET timeframe=$1,custom_strategy_id=$2,ai_strategy_config=$3,ai_mode=CASE WHEN strategy_version='ai-v1.0' THEN 'OFF' ELSE ai_mode END WHERE id=$4 AND tenant_id=$5",
+        [
+          v.timeframe ?? bot.timeframe,
+          customId,
+          JSON.stringify(aiConfig),
           id,
           tid,
         ],
@@ -192,6 +221,12 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
         )
       ).rows[0];
       if (!b) return reply.code(404).send({ error: "NOT_FOUND" });
+      if (["custom-v1.0", "ai-v1.0"].includes(b.strategy_version))
+        return reply
+          .code(400)
+          .send({
+            error: "USE_BOT_MONITOR_FOR_CUSTOM_OR_AI_STRATEGY_DECISIONS",
+          });
       const snapshot = await portfolioSnapshot(db, tid),
         config = botConfig.parse(b.config),
         advanced = advancedConfig.parse(b.advanced_config),

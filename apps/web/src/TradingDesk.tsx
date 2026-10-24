@@ -1,3 +1,4 @@
+import { StrategyFields, strategyFields } from "./StrategyCreator.tsx";
 import React, { useEffect, useState } from "react";
 type Request = (path: string, method?: string, data?: unknown) => Promise<any>;
 type Bot = {
@@ -8,6 +9,9 @@ type Bot = {
   strategy_version: string;
   config: any;
   advanced_config: any;
+  timeframe?: string;
+  custom_strategy_id?: string | null;
+  ai_strategy_config?: any;
 };
 export function TradingDesk({
   bots,
@@ -232,6 +236,7 @@ export function TradingDesk({
                 await request(`/bots/${bot.id}/config`, "PATCH", {
                   symbol: f.get("symbol"),
                   strategyVersion: f.get("strategyVersion"),
+                  ...strategyFields(f),
                   config: {
                     ...bot.config,
                     ...Object.fromEntries(
@@ -299,20 +304,12 @@ export function TradingDesk({
                     ))}
                   </select>
                 </label>
-                <label>
-                  Versioned strategy
-                  <select
-                    name="strategyVersion"
-                    defaultValue={bot.strategy_version}
-                  >
-                    {(options?.strategies ?? []).map((s: any) => (
-                      <option value={s.id} key={s.id}>
-                        {s.name} ·{" "}
-                        {s.execution === "PREVIEW_ONLY" ? "preview only" : s.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <StrategyFields
+                  key={bot.id}
+                  request={request}
+                  bot={bot}
+                  strategies={options?.strategies}
+                />
                 <label>
                   Position sizing
                   <select

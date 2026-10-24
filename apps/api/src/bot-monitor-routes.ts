@@ -27,7 +27,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
     return tenant(tid, async (db) => {
       const bot = (
         await db.query(
-          "SELECT b.id,b.name,b.status,b.symbol,b.timeframe,b.strategy_version,b.config,b.advanced_config,b.ai_mode,b.last_candle,b.created_at,c.id AS connection_id,c.name AS connection_name,c.provider,c.environment,c.status AS connection_status,c.last_verified_at,c.reconciled_at,c.ledger_version FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
+          "SELECT b.id,b.name,b.status,b.symbol,b.timeframe,b.strategy_version,b.config,b.custom_strategy_id,b.ai_strategy_config,b.advanced_config,b.ai_mode,b.last_candle,b.created_at,c.id AS connection_id,c.name AS connection_name,c.provider,c.environment,c.status AS connection_status,c.last_verified_at,c.reconciled_at,c.ledger_version FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
           [id, tid],
         )
       ).rows[0];
@@ -275,8 +275,9 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
           scope: "o.bot_id=$2 AND e.tenant_id=$1",
         },
         ai: {
-          from: "ai_analyses a",
-          columns: "a.id,a.mode,a.status,a.result,a.error_code,a.created_at",
+          from: "(SELECT id,tenant_id,bot_id,mode,status,result,error_code,created_at,provider,model,NULL::jsonb AS indicators FROM ai_analyses UNION ALL SELECT id,tenant_id,bot_id,'STRATEGY'::text AS mode,status,result,error_code,created_at,provider,model,input->'indicators' AS indicators FROM ai_strategy_decisions) a",
+          columns:
+            "a.id,a.mode,a.status,a.result,a.error_code,a.created_at,a.provider,a.model,a.indicators",
           time: "a.created_at",
           id: "a.id",
           run: "NULL::uuid",

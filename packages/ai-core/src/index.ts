@@ -1,3 +1,4 @@
+import { duration } from "../../trading/src/creator.ts";
 import { symbolSchema, type Symbol } from "../../trading/src/index.ts";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -51,7 +52,7 @@ export type NewsAnalysis = z.infer<typeof newsAnalysisSchema>;
 export const marketInputSchema = z.strictObject({
   symbol: symbolSchema,
   candleTime: z.number().int().nonnegative(),
-  interval: z.literal("15m"),
+  interval: z.enum(["15m", "30m", "1h"]),
   price: z.number().positive(),
   indicators: z.strictObject({
     ema9: z.number().positive(),
@@ -90,6 +91,11 @@ export interface AIProvider {
     input: MarketAnalysisInput,
   ): Promise<ProviderResult<MarketAnalysis>>;
   analyzeNews(input: NewsAnalysisInput): Promise<ProviderResult<NewsAnalysis>>;
+  analyzeTrade?(
+    input: unknown,
+  ): Promise<
+    ProviderResult<import("../../trading/src/creator.ts").AITradeDecision>
+  >;
 }
 export class AIError extends Error {
   constructor(
@@ -130,12 +136,14 @@ export function buildMarketInput(
   news: MarketAnalysisInput["news"] = [],
   now = Date.now(),
   symbol: Symbol = "BTCUSDT",
+  timeframe = "15",
 ): MarketAnalysisInput {
-  const closed = candles.filter((c) => c.time + 900000 <= now);
+  const ms = duration(timeframe);
+  const closed = candles.filter((c) => c.time + ms <= now);
   if (closed.length < 50) throw new AIError("AI_INPUT_STALE");
   const last = closed.at(-1)!;
   if (
-    now - last.time >= 1800000 ||
+    now - last.time >= ms * 2 ||
     closed.some(
       (c, i) =>
         ![c.time, c.open, c.close, c.high, c.low, c.volume].every(
@@ -145,7 +153,7 @@ export function buildMarketInput(
         c.low <= 0 ||
         c.high < c.low ||
         c.volume < 0 ||
-        (i > 0 && c.time - closed[i - 1].time !== 900000),
+        (i > 0 && c.time - closed[i - 1].time !== ms),
     )
   )
     throw new AIError("AI_INPUT_STALE");
@@ -169,7 +177,7 @@ export function buildMarketInput(
   return marketInputSchema.parse({
     symbol,
     candleTime: last.time,
-    interval: "15m",
+    interval: timeframe === "60" ? "1h" : `${timeframe}m`,
     price: last.close,
     indicators: {
       ema9: ema(closes, 9).at(-1),

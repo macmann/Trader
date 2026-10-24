@@ -204,11 +204,16 @@ export class OKXAdapter implements ExchangeAdapter {
     interval = "15",
     limit = 100,
   ): Promise<Candle[]> {
-    if (interval !== "15") throw Error("UNSUPPORTED_TIMEFRAME");
+    if (!["15", "30", "60"].includes(interval))
+      throw Error("UNSUPPORTED_TIMEFRAME");
     return (
       await this.request(
         "/api/v5/market/candles",
-        { instId: instrumentId(symbol), bar: "15m", limit },
+        {
+          instId: instrumentId(symbol),
+          bar: interval === "60" ? "1H" : `${interval}m`,
+          limit,
+        },
         "GET",
         false,
       )
