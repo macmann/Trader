@@ -730,3 +730,16 @@ test("a fill cannot reuse a known client identifier with a different exchange or
   );
   assert.equal(Number((await rows(f)).position.quantity), 0);
 });
+
+test("disabling Testnet execution after the durable marker blocks the final order send", async () => {
+  const f = await fixture();
+  let enabled = true;
+  await run(f, {
+    isExecutionEnabled: async () => enabled,
+    afterSubmitting: async () => {
+      enabled = false;
+    },
+  });
+  assert.equal(f.broker.creates, 0);
+  assert.equal((await rows(f)).orders[0].state, "Cancelled");
+});

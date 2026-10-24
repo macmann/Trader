@@ -27,4 +27,4 @@
 - Stop one user's bot and confirm the other user's activity continues. Explicitly verify existing-order/position handling.
 - Kill/restart the worker around submission and fills; verify there are no duplicate orders, no lost fills, and no new entries before reconciliation completes.
 - Confirm partial fills, cancellations, rejected orders, timeouts, rate limits, exchange outage, global stop, and database recovery all fail closed appropriately.
-- Complete all remaining code items before intentionally enabling `TRADING_EXECUTION_ENABLED` in this preview. Do not use live funds.
+- Complete all remaining code items before intentionally enabling Testnet execution in Admin Settings in this preview. Do not use live funds.

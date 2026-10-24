@@ -1,3 +1,4 @@
+import { testnetExecutionEnabled } from "../../api/src/installation.ts";
 import { entitlements } from "../../api/src/platform.ts";
 import type { ExchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import type pg from "pg";
@@ -8,6 +9,7 @@ import { portfolioSnapshot, lockPortfolio } from "../../api/src/portfolio.ts";
 import { orderEvent, terminal } from "./ledger.ts";
 export type ExecutionRuntime = {
   executionEnabled: boolean;
+  isExecutionEnabled?: () => Promise<boolean>;
   privateReady: boolean;
   marketReceivedAt: number;
   now: () => number;
@@ -57,6 +59,7 @@ export async function dispatchIntent(
     (o.side === "Sell" && o.bot_status === "PAUSED");
   if (
     !runtime.executionEnabled ||
+    !(await (runtime.isExecutionEnabled?.() ?? testnetExecutionEnabled(db))) ||
     !privateReady() ||
     now - marketTime() > 45000 ||
     now < marketTime() ||
@@ -202,6 +205,7 @@ export async function dispatchIntent(
   ).rows[0].execution_stopped;
   if (
     !runtime.executionEnabled ||
+    !(await (runtime.isExecutionEnabled?.() ?? testnetExecutionEnabled(db))) ||
     !privateReady() ||
     runtime.now() - marketTime() > 45000 ||
     stopped ||

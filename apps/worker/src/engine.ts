@@ -1,5 +1,8 @@
 import { bybitTestnetEndpoints } from "../../../packages/exchanges/src/index.ts";
-import { runtimeProvider } from "../../api/src/installation.ts";
+import {
+  runtimeProvider,
+  testnetExecutionEnabled,
+} from "../../api/src/installation.ts";
 import { writeFile } from "node:fs/promises";
 import { PrivateFeedState } from "./private-state.ts";
 import { paperCycle } from "./paper.ts";
@@ -239,6 +242,7 @@ export async function tick(
     privateReady: boolean;
     marketReceivedAt: number;
     executionEnabled: boolean;
+    isExecutionEnabled?: () => Promise<boolean>;
     now?: () => number;
     afterIntent?: () => Promise<void>;
     afterSubmitting?: () => Promise<void>;
@@ -298,8 +302,12 @@ export async function tick(
       const accountRevision = feed?.state.revision;
       const runtime: ExecutionRuntime = {
         executionEnabled:
-          override?.executionEnabled ??
-          process.env.TRADING_EXECUTION_ENABLED === "true",
+          override?.executionEnabled ?? (await testnetExecutionEnabled(db)),
+        isExecutionEnabled:
+          override?.isExecutionEnabled ??
+          (override
+            ? async () => override.executionEnabled
+            : () => testnetExecutionEnabled(db)),
         privateReady:
           override?.privateReady ??
           (!!feed?.state.ready(clock()) &&
@@ -759,7 +767,7 @@ export async function startWorker() {
   console.log(
     JSON.stringify({
       event: "WORKER_STARTED",
-      executionEnabled: process.env.TRADING_EXECUTION_ENABLED === "true",
+      executionEnabled: await testnetExecutionEnabled(),
       liveEnabled: false,
     }),
   );

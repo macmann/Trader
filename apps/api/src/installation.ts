@@ -3,6 +3,7 @@ import { pool } from "./db.ts";
 import { encrypt, decrypt } from "../../../packages/core/src/index.ts";
 import { configuredProvider } from "../../../packages/ai-providers/src/index.ts";
 export const settingsSchema = z.strictObject({
+  TRADING_EXECUTION_ENABLED: z.enum(["true", "false"]).optional(),
   MAIL_MODE: z.enum(["disabled", "resend"]).optional(),
   MAIL_FROM: z
     .string()
@@ -58,7 +59,17 @@ export async function savedSettings(
 export async function runtimeConfiguration(
   db: Pick<typeof pool, "query"> = pool,
 ): Promise<NodeJS.ProcessEnv> {
-  return { ...process.env, ...(await savedSettings(db)) };
+  const saved = await savedSettings(db);
+  return {
+    ...process.env,
+    ...saved,
+    TRADING_EXECUTION_ENABLED: saved.TRADING_EXECUTION_ENABLED ?? "false",
+  };
+}
+export async function testnetExecutionEnabled(
+  db: Pick<typeof pool, "query"> = pool,
+) {
+  return (await runtimeConfiguration(db)).TRADING_EXECUTION_ENABLED === "true";
 }
 export async function runtimeProvider(db: Pick<typeof pool, "query"> = pool) {
   return configuredProvider(await runtimeConfiguration(db));
@@ -88,6 +99,8 @@ export async function publicSetupStatus() {
 }
 export function publicSettings(env: NodeJS.ProcessEnv) {
   return {
+    TRADING_EXECUTION_ENABLED: env.TRADING_EXECUTION_ENABLED ?? "false",
+    liveTradingEnabled: false,
     MAIL_MODE: env.MAIL_MODE ?? "disabled",
     MAIL_FROM: env.MAIL_FROM ?? "",
     AI_PROVIDER: env.AI_PROVIDER ?? "disabled",

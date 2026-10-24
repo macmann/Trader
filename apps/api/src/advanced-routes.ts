@@ -1,3 +1,4 @@
+import { testnetExecutionEnabled } from "./installation.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { tenant, audit } from "./db.ts";
@@ -25,7 +26,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
     timeframes: ["15m"],
     derivativesSupported: false,
     advancedExecutionSupported: true,
-    executionEnabled: process.env.TRADING_EXECUTION_ENABLED === "true",
+    executionEnabled: await testnetExecutionEnabled(),
   }));
   app.get("/api/portfolio", async (req) =>
     tenant(req.identity!.tenantId, (db) =>

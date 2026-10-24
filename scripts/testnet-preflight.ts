@@ -1,3 +1,4 @@
+import { testnetExecutionEnabled } from "../apps/api/src/installation.ts";
 import pg from "pg";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -157,7 +158,7 @@ export async function runPreflight() {
       publicStatus: publicAccess.status,
       rls,
       switchesOff:
-        process.env.TRADING_EXECUTION_ENABLED !== "true" &&
+        !(await testnetExecutionEnabled(db)) &&
         process.env.LIVE_TRADING_PLATFORM_ENABLED !== "true",
       tenantCount,
       connections,
