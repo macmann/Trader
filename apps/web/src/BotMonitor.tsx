@@ -1,3 +1,4 @@
+import { monitorTime as when } from "./monitor-time.ts";
 import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
 import React, { useEffect, useRef, useState } from "react";
 const money = (v: unknown) =>
@@ -7,8 +8,6 @@ const money = (v: unknown) =>
         style: "currency",
         currency: "USD",
       }).format(Number(v));
-const when = (v: unknown) =>
-  v ? new Date(String(v)).toLocaleString() : "Not recorded";
 const text = (v: unknown) =>
   String(v ?? "Unknown")
     .replaceAll("_", " ")
