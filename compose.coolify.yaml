@@ -4,31 +4,50 @@ x-build: &build
   target: runtime
 x-runtime-environment: &runtime-environment
   NODE_ENV: production
-  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to your restricted PostgreSQL connection URL}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY to a permanent 64-character hex key}
   TRADING_EXECUTION_ENABLED: "false"
   LIVE_TRADING_PLATFORM_ENABLED: "false"
-  AI_PROVIDER: ${AI_PROVIDER:-disabled}
-  AI_MODEL: ${AI_MODEL:-}
-  AI_API_KEY: ${AI_API_KEY:-}
-  AI_MAX_CALLS_PER_DAY: ${AI_MAX_CALLS_PER_DAY:-100}
-  NEWS_ENABLED: ${NEWS_ENABLED:-false}
 services:
+  initialize:
+    build: *build
+    user: "0:0"
+    restart: "no"
+    command: ["node", "--import", "tsx", "scripts/installation-secrets.ts"]
+    volumes:
+      - admin-secrets:/secrets/admin
+      - app-secrets:/secrets/app
+    healthcheck:
+      disable: true
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader_admin
+      POSTGRES_DB: trader
+      POSTGRES_PASSWORD_FILE: /run/admin-secrets/database-password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - admin-secrets:/run/admin-secrets:ro
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader_admin -d trader"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
   migrate:
     build: *build
     init: true
     restart: "no"
     command:
-      [
-        "node",
-        "--use-env-proxy",
-        "--import",
-        "tsx",
-        "scripts/deploy-migrate.ts",
-      ]
-    environment:
-      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?Set DATABASE_ADMIN_URL to your migration PostgreSQL connection URL}
-      APP_DATABASE_USER: ${APP_DATABASE_USER:?Set APP_DATABASE_USER}
+      ["node", "--import", "tsx", "scripts/container-entrypoint.ts", "migrate"]
+    volumes:
+      - admin-secrets:/run/admin-secrets:ro
+      - app-secrets:/run/app-secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       disable: true
   web:
@@ -38,15 +57,22 @@ services:
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
     stop_grace_period: 60s
+    command:
+      [
+        "node",
+        "--use-env-proxy",
+        "--import",
+        "tsx",
+        "scripts/container-entrypoint.ts",
+        "web",
+      ]
     environment:
       <<: *runtime-environment
       APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to your HTTPS domain without a trailing slash}
       PORT: "3000"
-      MAIL_MODE: resend
-      MAIL_FROM: ${MAIL_FROM:?Set MAIL_FROM to an address on your verified Resend domain}
-      RESEND_API_KEY: ${RESEND_API_KEY:?Set RESEND_API_KEY}
-      TELEGRAM_NOTIFICATIONS_CONFIGURED: ${TELEGRAM_BOT_TOKEN:+true}
-      BILLING_WEBHOOK_SECRET: ${BILLING_WEBHOOK_SECRET:-}
+      MAIL_MODE: disabled
+    volumes:
+      - app-secrets:/run/app-secrets:ro
     expose: ["3000"]
     depends_on:
       migrate:
@@ -59,10 +85,17 @@ services:
     tmpfs: ["/tmp:size=64m,mode=1777"]
     stop_grace_period: 60s
     command:
-      ["node", "--use-env-proxy", "--import", "tsx", "apps/worker/src/index.ts"]
-    environment:
-      <<: *runtime-environment
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      [
+        "node",
+        "--use-env-proxy",
+        "--import",
+        "tsx",
+        "scripts/container-entrypoint.ts",
+        "worker",
+      ]
+    environment: *runtime-environment
+    volumes:
+      - app-secrets:/run/app-secrets:ro
     healthcheck:
       test:
         [
@@ -80,3 +113,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+volumes:
+  postgres-data:
+  admin-secrets:
+  app-secrets:

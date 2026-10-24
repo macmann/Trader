@@ -1,3 +1,7 @@
+import {
+  runtimeProvider,
+  runtimeConfiguration,
+} from "../../api/src/installation.ts";
 import { consume } from "../../api/src/platform.ts";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -27,17 +31,17 @@ import {
   type AnalysisOutcome,
   marketInputSchema,
 } from "../../../packages/ai-core/src/index.ts";
-import { configuredProvider } from "../../../packages/ai-providers/src/index.ts";
 import {
   fetchFeed,
   feeds,
   type Article,
 } from "../../../packages/news/src/index.ts";
-export function callLimit() {
-  const n = Number(process.env.AI_MAX_CALLS_PER_DAY ?? 100);
+export function callLimit(env: NodeJS.ProcessEnv = process.env) {
+  const n = Number(env.AI_MAX_CALLS_PER_DAY ?? 100);
   return Number.isInteger(n) && n >= 0 && n <= 10000 ? n : 0;
 }
-export async function reserveCall(db: pg.PoolClient, limit = callLimit()) {
+export async function reserveCall(db: pg.PoolClient, limit?: number) {
+  limit ??= callLimit(await runtimeConfiguration(db));
   if (limit <= 0) throw new AIError("AI_BUDGET_EXCEEDED");
   const result = await db.query(
     "INSERT INTO ai_usage_daily(day,calls) VALUES((now() AT TIME ZONE 'UTC')::date,1) ON CONFLICT(day) DO UPDATE SET calls=ai_usage_daily.calls+1 WHERE ai_usage_daily.calls<$1 RETURNING day",
@@ -64,9 +68,10 @@ export type ContextOutcome = AnalysisOutcome & {
 };
 export async function marketContext(
   input: MarketAnalysisInput,
-  provider: AIProvider | null = configuredProvider(),
+  provider?: AIProvider | null,
   cacheOnly = false,
 ): Promise<ContextOutcome> {
+  if (provider === undefined) provider = await runtimeProvider();
   if (!provider)
     return {
       status: "FAILED",
@@ -234,11 +239,12 @@ export async function analyzeBot(
   input: MarketAnalysisInput,
   direction: "LONG" | "EXIT" | "NONE",
   strategyAllowed: boolean,
-  provider: AIProvider | null = configuredProvider(),
+  provider?: AIProvider | null,
   cacheOnly = false,
 ) {
   if (mode === "OFF")
     return { id: null, outcome: null, gate: aiGate(mode, direction, null) };
+  if (provider === undefined) provider = await runtimeProvider(db);
   const inputHash = contextKey(provider ?? { id: "disabled", model: "none" }, {
     snapshot: input,
     direction,
@@ -409,12 +415,10 @@ export async function classifyHeadline(
   }
 }
 let lastNews = 0;
-export async function newsCycle(
-  provider: AIProvider | null = configuredProvider(),
-  force = false,
-) {
+export async function newsCycle(provider?: AIProvider | null, force = false) {
+  if (provider === undefined) provider = await runtimeProvider();
   if (
-    process.env.NEWS_ENABLED !== "true" ||
+    (await runtimeConfiguration()).NEWS_ENABLED !== "true" ||
     !provider ||
     (!force && Date.now() - lastNews < 300000)
   )
@@ -451,9 +455,8 @@ export async function newsCycle(
   }
 }
 
-export async function warmAIContext(
-  provider: AIProvider | null = configuredProvider(),
-) {
+export async function warmAIContext(provider?: AIProvider | null) {
+  if (provider === undefined) provider = await runtimeProvider();
   if (!provider) return;
   const workspaces = (await pool.query("SELECT id FROM workspaces")).rows;
   const activeSymbols = new Set<

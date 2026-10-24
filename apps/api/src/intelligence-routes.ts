@@ -1,3 +1,4 @@
+import { runtimeProvider, runtimeConfiguration } from "./installation.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { tenant, audit } from "./db.ts";
@@ -9,14 +10,17 @@ import { configuredProvider } from "../../../packages/ai-providers/src/index.ts"
 import { BybitAdapter } from "../../../packages/core/src/index.ts";
 import { analyzeBot, recentNews } from "../../worker/src/intelligence.ts";
 export function registerIntelligenceRoutes(app: FastifyInstance) {
-  app.get("/api/ai/status", async () => ({
-    provider: process.env.AI_PROVIDER ?? "disabled",
-    model: process.env.AI_MODEL ?? null,
-    ready: configuredProvider() !== null,
-    newsEnabled: process.env.NEWS_ENABLED === "true",
-    executionEnabled: process.env.TRADING_EXECUTION_ENABLED === "true",
-    liveEnabled: false,
-  }));
+  app.get("/api/ai/status", async () => {
+    const env = await runtimeConfiguration();
+    return {
+      provider: env.AI_PROVIDER ?? "disabled",
+      model: env.AI_MODEL ?? null,
+      ready: configuredProvider(env) !== null,
+      newsEnabled: env.NEWS_ENABLED === "true",
+      executionEnabled: process.env.TRADING_EXECUTION_ENABLED === "true",
+      liveEnabled: false,
+    };
+  });
   app.get("/api/ai/analyses", async (req) => {
     const { botId } = z.object({ botId: z.uuid().optional() }).parse(req.query);
     return tenant(
@@ -82,7 +86,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const id = z.uuid().parse((req.params as { id: string }).id),
         tid = req.identity!.tenantId;
-      if (!configuredProvider())
+      if (!(await runtimeProvider()))
         return reply.code(503).send({ error: "AI_UNAVAILABLE" });
       return tenant(tid, async (db) => {
         const bot = (

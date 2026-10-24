@@ -1,3 +1,4 @@
+import { runtimeProvider } from "../../api/src/installation.ts";
 import { writeFile } from "node:fs/promises";
 import { PrivateFeedState } from "./private-state.ts";
 import { paperCycle } from "./paper.ts";
@@ -39,7 +40,6 @@ import {
   warmAIContext,
   closeIntelligence,
 } from "./intelligence.ts";
-import { configuredProvider } from "../../../packages/ai-providers/src/index.ts";
 import { createHmac, randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { Decimal } from "decimal.js";
@@ -469,7 +469,7 @@ export async function tick(
             buildMarketInput(candles, news, Date.now(), row.symbol),
             "NONE",
             false,
-            configuredProvider(),
+            await runtimeProvider(db),
             true,
           );
           if (refreshed.outcome?.error === "AI_BUSY") return;
@@ -602,7 +602,7 @@ export async function tick(
               buildMarketInput(candles, news, Date.now(), row.symbol),
               signal.direction,
               strategyAllowed,
-              configuredProvider(),
+              await runtimeProvider(db),
               true,
             )
           : {

@@ -1,8 +1,10 @@
+import { runtimeConfiguration } from "../../api/src/installation.ts";
 import { pool, tenant } from "../../api/src/db.ts";
 export async function notificationCycle(
   transport: typeof fetch = fetch,
-  token = process.env.TELEGRAM_BOT_TOKEN,
+  token?: string,
 ) {
+  token ??= (await runtimeConfiguration()).TELEGRAM_BOT_TOKEN;
   if (!token) return;
   for (const w of (await pool.query("SELECT id FROM workspaces")).rows) {
     const item = await tenant(w.id, async (db) => {
