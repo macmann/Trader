@@ -1,3 +1,4 @@
+import { schemaReady } from "../../../scripts/database-ready.ts";
 import { registerInstallationRoutes } from "./installation-routes.ts";
 import { runtimeConfiguration, isOperator } from "./installation.ts";
 import {
@@ -204,9 +205,13 @@ async function sendLink(
     throw e;
   }
 }
-app.get("/api/health", async () => {
-  await pool.query("SELECT 1");
-  return { status: "ok", liveTrading: false };
+app.get("/api/health", async (_req, reply) => {
+  try {
+    if (!(await schemaReady(pool))) throw Error();
+    return { status: "ok", liveTrading: false };
+  } catch {
+    return reply.code(503).send({ status: "not_ready", liveTrading: false });
+  }
 });
 app.post(
   "/api/auth/register",

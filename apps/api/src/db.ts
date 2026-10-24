@@ -1,5 +1,12 @@
 import pg from "pg";
-export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+if (process.env.NODE_ENV === "production" && !process.env.DATABASE_URL)
+  throw Error(
+    "DATABASE_URL is required; production containers must use the bootstrap entrypoint",
+  );
+export const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  connectionTimeoutMillis: 5000,
+});
 export async function tenant<T>(
   id: string,
   fn: (db: pg.PoolClient) => Promise<T>,

@@ -1,10 +1,18 @@
+import { waitForDatabase } from "./database-ready.ts";
 import pg from "pg";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { migrate } from "./migrations.ts";
 import { configureDeploymentRole } from "./roles.ts";
-const db = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
+const db = new pg.Client({
+  connectionString: process.env.DATABASE_ADMIN_URL,
+  connectionTimeoutMillis: 5000,
+});
 try {
+  await waitForDatabase({
+    connectionString: process.env.DATABASE_ADMIN_URL,
+    service: "migrate",
+  });
   await db.connect();
   await db.query("SELECT pg_advisory_lock(72723250)");
   try {
@@ -21,12 +29,15 @@ try {
       ).trim();
       if (!/^[a-f0-9]{64}$/.test(password) || !/^[a-f0-9]{64}$/.test(setup))
         throw Error("Invalid installation credentials");
-      const exists = await db.query(
-        "SELECT 1 FROM pg_roles WHERE rolname='trader_app'",
-      );
+      const role = process.env.APP_DATABASE_USER!;
+      const exists = await db.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [
+        role,
+      ]);
       if (!exists.rowCount)
         await db.query(
-          "CREATE ROLE trader_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD " +
+          "CREATE ROLE " +
+            db.escapeIdentifier(role) +
+            " LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD " +
             db.escapeLiteral(password),
         );
       await db.query(

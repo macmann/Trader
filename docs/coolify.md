@@ -12,7 +12,7 @@ Generate the key once on a trusted machine with `openssl rand -hex 32`. Store it
 ## Deploy
 
 1. Point `tradingbot.b-connect.site` at your Coolify server.
-2. Add `macmann/Trader`, branch `main`, with the **Docker Compose** build pack and Compose location `/compose.coolify.yaml`. Build context is the repository root.
+2. Add `macmann/Trader`, branch `main`, with the **Docker Compose** build pack and Compose location `/docker-compose.yaml`. Build context is the repository root.
 3. Add the two variables above. Remove obsolete database URL/password and provider variables from this application's Coolify configuration. The default bundled Compose does not use them.
 4. Assign `https://tradingbot.b-connect.site` to **web**, container port **3000**. Keep direct container access private. Coolify supplies HTTPS and the reverse proxy; the application trusts one immediate proxy hop.
 5. Deploy. Credential initialization completes, PostgreSQL becomes healthy, migrations complete, then web and worker start. The two one-shot services exiting successfully is expected.
@@ -77,3 +77,60 @@ Existing external/shared-database deployments are not automatically migrated. Ba
 For administrator account recovery without email, use an authenticated database-administrator maintenance procedure to reset the specific account's Argon2id password hash and revoke its sessions. There is no public recovery bypass or permanent setup backdoor. Re-enabling first-run setup on a populated installation is intentionally unsupported.
 
 Builds use the existing non-root Node 24 image. Normal Coolify builds need no custom CA; managed build proxies can mount the optional BuildKit `proxy_ca` secret while preserving TLS verification. Local checks do not validate your real Coolify routing, DNS, email delivery or exchange connectivity.
+
+## Default Compose file and startup readiness
+
+`docker-compose.yaml` is the canonical complete production stack. `compose.coolify.yaml` remains an identical compatibility mirror for existing Coolify resources. Use the root `/docker-compose.yaml` location for new resources. In Coolify select the Docker Compose build pack and remove any old custom command that directly starts `apps/api/src/server.ts`; the image default command must be allowed to run bootstrap. There are no optional profiles to activate, no external network requirement and no Redis dependency. Do not select the local-development `infra/compose.yaml` for production.
+
+The root file runs the following services on its automatically created private Compose network:
+
+| Service      | Expected state | Purpose                                                                                                                        |
+| ------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `initialize` | Exited (0)     | Generate internal credentials once into persistent secret volumes                                                              |
+| `postgres`   | Healthy        | PostgreSQL 17 Alpine with persistent `postgres-data` and no public port                                                        |
+| `migrate`    | Exited (0)     | Wait for PostgreSQL, apply schema/pending checksum-verified migrations, initialize restricted role and installation token hash |
+| `web`        | Healthy        | Bootstrap entrypoint, API and built frontend on container port 3000                                                            |
+| `worker`     | Healthy        | Bootstrap entrypoint and trading/AI/news/notification/paper workers                                                            |
+
+Both application services depend on database health and successful migration. Their TypeScript entrypoint independently retries database/schema readiness for a 60-second window with short backoff and per-connection/query timeouts. The migration job also retries initial database connectivity. Each failed startup exits clearly without printing connection strings; app restart policies permit recovery after a longer outage. No migration or initialization is performed by a browser request. The API only listens after the entrypoint verifies the migration manifest and the runtime role's RLS restrictions. `/api/health` checks live database access, migration checksums and critical schema objects; it returns 503 when those checks fail. Worker readiness remains tied to recent successful loop progress.
+
+The image default command uses this same entrypoint even if Coolify does not override its command. `DATABASE_URL` and `DATABASE_ADMIN_URL` are constructed at runtime with the internal **`postgres:5432`** hostname and separate logins. Localhost URLs in the development `.env.example`, or stale connection URLs in a Coolify environment, cannot override that construction. Runtime containers do not receive the administrator credential volume. The loopback address in the Node HTTP healthcheck refers to the API in its own container and is intentionally unrelated to database networking.
+
+The build stage explicitly installs development dependencies and runs with development build tooling. The final stage uses `NODE_ENV=production`, prunes development dependencies and contains no environment files or baked secrets. Keep keys out of Docker build arguments. Only the optional managed-proxy CA is a BuildKit secret mount, never an image layer.
+
+### Variable reference
+
+| Variable                             | Default                                                  | Explicit configuration?                                                  |
+| ------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `APP_ORIGIN`                         | None                                                     | **Required:** your exact HTTPS origin                                    |
+| `APP_ENCRYPTION_KEY`                 | None                                                     | **Required:** permanent random 64-character hex key                      |
+| `POSTGRES_DB`                        | `trader`                                                 | Optional, choose before initial deployment                               |
+| `POSTGRES_USER`                      | `trader_admin`                                           | Optional migration/administrator login, choose before initial deployment |
+| `APP_DATABASE_USER`                  | `trader_app`                                             | Optional restricted runtime login, must differ from administrator        |
+| Internal database passwords          | Cryptographically generated into persistent secret files | No environment variable required                                         |
+| `DATABASE_URL`, `DATABASE_ADMIN_URL` | Generated by bootstrap using Docker DNS                  | Do not configure for the bundled stack                                   |
+| Email, AI, Telegram, billing keys    | Unconfigured; optional integrations disabled             | Configure later in Admin Settings                                        |
+| Execution/live flags                 | Fixed `false` in Compose                                 | Not user-overridable environment settings in this deployment             |
+
+Database identifier overrides are optional; changing them after initialization does not rename an existing database/login or move its data. `POSTGRES_PASSWORD` is not needed or consumed by this bundled Compose file; PostgreSQL reads `POSTGRES_PASSWORD_FILE` from its private volume. Never share the administrator account with runtime services.
+
+### Verification and troubleshooting
+
+Coolify runs the following deployment command automatically; no SSH commands, separate database resource, manual migrations or network creation are prerequisites:
+
+```sh
+docker compose -f docker-compose.yaml up --build -d
+```
+
+For an operator who already has an authorized service terminal or local checkout, useful diagnostic commands are:
+
+```sh
+docker compose -f docker-compose.yaml config --quiet
+docker compose -f docker-compose.yaml ps -a
+docker compose -f docker-compose.yaml logs --tail=50 migrate web worker
+docker compose -f docker-compose.yaml exec web node --import tsx scripts/container-health.ts
+```
+
+In Coolify, the same service logs and health states are visible through its UI; these commands are diagnostics, not extra installation steps. Avoid printing full rendered Compose/environment configuration because it contains the encryption key. Check `https://tradingbot.b-connect.site/api/health` for `status: ok` and `liveTrading: false`. Both one-shot services must exit 0, and PostgreSQL/web/worker should become healthy. A healthcheck failure is not proof of an exchange failure; inspect the relevant sanitized service logs.
+
+On redeployment, existing credential and data volumes are reused, applied migrations are checked and skipped, pending migrations are applied and app services start. Keep the Coolify resource/project identity and its volume associations stable. Do not run two PostgreSQL containers against the same data volume. This single-database deployment is persistent but not highly available; database replacement/recovery can cause downtime. Disk capacity, backups, HTTPS/DNS, real provider delivery and exchange acceptance remain operator responsibilities. Testnet/live execution flags remain disabled.
