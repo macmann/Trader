@@ -5,7 +5,7 @@ export class PrivateFeedState {
   lastMessage = 0;
   revision = 0;
   private subscriptions = new Set<string>();
-  constructor(readonly provider: "BYBIT" | "OKX") {}
+  constructor(readonly provider: "BYBIT" | "BYBIT_EU_TESTNET" | "OKX") {}
   invalidate() {
     this.failed = true;
     this.authenticated = false;
@@ -37,7 +37,7 @@ export class PrivateFeedState {
       }
       const m = JSON.parse(raw);
       if (!m || typeof m !== "object" || Array.isArray(m)) throw Error();
-      if (this.provider === "BYBIT") {
+      if (this.provider !== "OKX") {
         if (m.op === "auth") {
           if (m.success !== true) throw Error();
           this.authenticated = true;

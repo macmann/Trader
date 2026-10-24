@@ -889,6 +889,41 @@ test("EU connections require explicit live read-only acknowledgement and cannot 
       ).rowCount,
       0,
     );
+    globalThis.fetch = (async (input: any) => {
+      const url = new URL(input);
+      assert.equal(url.origin, "https://api-testnet.bybit.eu");
+      return new Response(
+        JSON.stringify({
+          retCode: 0,
+          result:
+            url.pathname === "/v5/user/query-api"
+              ? { readOnly: 0, permissions: { Spot: ["SpotTrade"] } }
+              : { list: [] },
+        }),
+      );
+    }) as typeof fetch;
+    const euTestnet = await app.inject({
+      method: "POST",
+      url: "/api/connections",
+      headers: a.headers,
+      payload: {
+        ...payload,
+        provider: "BYBIT_EU_TESTNET",
+        environment: "TESTNET",
+      },
+    });
+    assert.equal(euTestnet.statusCode, 201, euTestnet.body);
+    const testBot = await app.inject({
+      method: "POST",
+      url: "/api/bots",
+      headers: a.headers,
+      payload: {
+        name: "EU Testnet bot",
+        connectionId: euTestnet.json().id,
+        config: {},
+      },
+    });
+    assert.equal(testBot.statusCode, 201, testBot.body);
   } finally {
     globalThis.fetch = original;
   }

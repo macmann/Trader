@@ -20,11 +20,16 @@ export type ExchangeAdapter = Pick<
   | "cancelOrder"
 >;
 export const providers = [
-  { id: "BYBIT", name: "Bybit Testnet", environment: "TESTNET" },
+  { id: "BYBIT", name: "Bybit Global Testnet (.com)", environment: "TESTNET" },
+  {
+    id: "BYBIT_EU_TESTNET",
+    name: "Bybit EU Testnet (.eu)",
+    environment: "TESTNET",
+  },
   { id: "OKX", name: "OKX Demo", environment: "TESTNET" },
   {
     id: "BYBIT_EU",
-    name: "Bybit EU (LIVE, read-only preview; broker access required)",
+    name: "Bybit EU (LIVE, read-only preview)",
     environment: "LIVE",
     readOnly: true,
   },
@@ -322,10 +327,25 @@ export function exchangeAdapter(
   environment: "TESTNET" | "LIVE",
   credentials?: ExchangeCredentials,
 ): ExchangeAdapter {
-  if (provider === "BYBIT_EU")
+  if (provider === "BYBIT_EU") {
+    if (environment !== "LIVE")
+      throw new ExchangeError(0, "BYBIT_EU_REQUIRES_LIVE_ENVIRONMENT");
     return new BybitAdapter(environment, credentials, "EU");
+  }
   if (environment !== "TESTNET") throw new ExchangeError(0, "LIVE_DISABLED");
   if (provider === "BYBIT") return new BybitAdapter(environment, credentials);
+  if (provider === "BYBIT_EU_TESTNET")
+    return new BybitAdapter(environment, credentials, "EU");
   if (provider === "OKX") return new OKXAdapter(environment, credentials);
   throw new ExchangeError(0, "UNSUPPORTED_EXCHANGE");
+}
+
+export function bybitTestnetEndpoints(provider: "BYBIT" | "BYBIT_EU_TESTNET") {
+  if (provider !== "BYBIT" && provider !== "BYBIT_EU_TESTNET")
+    throw new ExchangeError(0, "UNSUPPORTED_TESTNET_EXCHANGE");
+  const domain = provider === "BYBIT_EU_TESTNET" ? "bybit.eu" : "bybit.com";
+  return {
+    public: `wss://stream-testnet.${domain}/v5/public/spot`,
+    private: `wss://stream-testnet.${domain}/v5/private`,
+  };
 }
