@@ -172,11 +172,17 @@ export class BybitAdapter {
   constructor(
     readonly environment: "TESTNET" | "LIVE",
     private credentials?: Credentials,
+    readonly region: "GLOBAL" | "EU" = "GLOBAL",
+    private transport: typeof fetch = fetch,
   ) {
+    if (region === "EU" && environment !== "LIVE")
+      throw new ExchangeError(0, "BYBIT_EU_REQUIRES_LIVE_ENVIRONMENT");
     this.base =
-      environment === "TESTNET"
-        ? "https://api-testnet.bybit.com"
-        : "https://api.bybit.com";
+      region === "EU"
+        ? "https://api.bybit.eu"
+        : environment === "TESTNET"
+          ? "https://api-testnet.bybit.com"
+          : "https://api.bybit.com";
   }
   async request(
     path: string,
@@ -184,6 +190,8 @@ export class BybitAdapter {
     method: "GET" | "POST" = "GET",
     auth = true,
   ): Promise<any> {
+    if (this.region === "EU" && method !== "GET")
+      throw new ExchangeError(0, "LIVE_TRADING_DISABLED");
     const payload =
       method === "GET"
         ? new URLSearchParams(
@@ -206,7 +214,7 @@ export class BybitAdapter {
           .digest("hex"),
       });
     }
-    const res = await fetch(
+    const res = await this.transport(
       this.base + path + (method === "GET" && payload ? "?" + payload : ""),
       {
         method,
@@ -228,11 +236,18 @@ export class BybitAdapter {
     if (body.retCode !== 0)
       throw new ExchangeError(
         body.retCode,
-        [10003, 10004, 10005, 33004].includes(body.retCode)
-          ? "INVALID_CREDENTIALS"
-          : body.retCode === 10006
-            ? "RATE_LIMITED"
-            : "EXCHANGE_ERROR",
+        (
+          {
+            10002: "EXCHANGE_CLOCK_SKEW",
+            10003: "API_KEY_OR_ENVIRONMENT_MISMATCH",
+            10004: "INVALID_SIGNATURE",
+            10005: "PERMISSION_ERROR",
+            10007: "INVALID_CREDENTIALS",
+            10010: "IP_BINDING_ERROR",
+            10006: "RATE_LIMITED",
+            33004: "API_KEY_EXPIRED",
+          } as Record<number, string>
+        )[body.retCode] ?? "EXCHANGE_ERROR",
       );
     return body.result;
   }
@@ -242,7 +257,20 @@ export class BybitAdapter {
     const dangerous =
       (p.Wallet ?? []).some((x: string) => /withdraw|transfer/i.test(x)) ||
       (p.Fund ?? []).length > 0;
-    if (dangerous || !(p.Spot ?? []).includes("SpotTrade") || r.readOnly !== 0)
+    if (dangerous) throw new ExchangeError(0, "PERMISSION_ERROR");
+    if (this.region === "EU") {
+      if (r.readOnly !== 1)
+        throw new ExchangeError(0, "READ_ONLY_API_KEY_REQUIRED");
+      await this.getBalances();
+      return {
+        readAccount: true,
+        trading: false,
+        withdrawals: false,
+        readOnly: true,
+        ipBinding: r.ips ?? [],
+      };
+    }
+    if (!(p.Spot ?? []).includes("SpotTrade") || r.readOnly !== 0)
       throw new ExchangeError(0, "PERMISSION_ERROR");
     return {
       readAccount: true,

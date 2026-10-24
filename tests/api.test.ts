@@ -809,3 +809,87 @@ test("failed transactional mail revokes links and password reset does not reveal
     }
   }
 });
+
+test("EU connections require explicit live read-only acknowledgement and cannot create bots", async () => {
+  const a = await account();
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async (input: any, init: any) => {
+    const url = new URL(input);
+    assert.equal(url.origin, "https://api.bybit.eu");
+    assert.equal(init.method, "GET");
+    assert.equal(init.headers["X-BAPI-API-KEY"], "eu-fixture-key");
+    calls++;
+    return new Response(
+      JSON.stringify({
+        retCode: 0,
+        result:
+          url.pathname === "/v5/user/query-api"
+            ? { readOnly: 1, permissions: {} }
+            : { list: [] },
+      }),
+    );
+  }) as typeof fetch;
+  const payload = {
+    provider: "BYBIT_EU",
+    environment: "LIVE",
+    name: "EU read-only fixture",
+    apiKey: "  eu-fixture-key  ",
+    apiSecret: "  eu-fixture-secret  ",
+  };
+  try {
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/connections",
+      headers: a.headers,
+      payload,
+    });
+    assert.equal(blocked.statusCode, 400);
+    assert.equal(calls, 0);
+    const connection = await app.inject({
+      method: "POST",
+      url: "/api/connections",
+      headers: a.headers,
+      payload: { ...payload, readOnlyAcknowledged: true },
+    });
+    assert.equal(connection.statusCode, 201, connection.body);
+    assert.equal(connection.json().permissions.trading, false);
+    const stored = (
+      await admin.query(
+        "SELECT environment,provider,credentials FROM exchange_connections WHERE id=$1",
+        [connection.json().id],
+      )
+    ).rows[0];
+    assert.equal(stored.environment, "LIVE");
+    assert.equal(stored.provider, "BYBIT_EU");
+    assert.ok(!stored.credentials.includes("eu-fixture-secret"));
+    const bot = await app.inject({
+      method: "POST",
+      url: "/api/bots",
+      headers: a.headers,
+      payload: {
+        name: "Blocked live bot",
+        connectionId: connection.json().id,
+        config: {
+          capital: 100,
+          maxTrade: 20,
+          stopLossPct: 2,
+          takeProfitPct: 4,
+          dailyLossLimit: 5,
+        },
+      },
+    });
+    assert.equal(bot.statusCode, 400, bot.body);
+    assert.equal(bot.json().error, "CONNECTED_TESTNET_EXCHANGE_REQUIRED");
+    assert.equal(
+      (
+        await admin.query("SELECT * FROM bots WHERE connection_id=$1", [
+          connection.json().id,
+        ])
+      ).rowCount,
+      0,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});

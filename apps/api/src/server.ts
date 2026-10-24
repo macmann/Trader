@@ -166,7 +166,12 @@ app.setErrorHandler((err, req, reply) => {
       details: err.issues.map((v) => ({ path: v.path, message: v.message })),
     });
   if (err instanceof ExchangeError)
-    return reply.code(422).send({ error: err.status });
+    return reply
+      .code(422)
+      .send({
+        error: err.status,
+        exchangeCode: Number.isSafeInteger(err.code) ? err.code : 0,
+      });
   const e = err as { code?: string; statusCode?: number };
   if (e.code === "23505")
     return reply.code(409).send({ error: "ALREADY_EXISTS" });
@@ -441,15 +446,23 @@ app.post("/api/connections", async (req, reply) => {
     return reply.code(403).send({ error: "REAUTHENTICATION_REQUIRED" });
   const v = z
     .object({
-      provider: z.enum(["BYBIT", "OKX"]).default("BYBIT"),
+      provider: z.enum(["BYBIT", "OKX", "BYBIT_EU"]).default("BYBIT"),
+      readOnlyAcknowledged: z.boolean().optional(),
       passphrase: z.string().min(1).max(256).optional(),
       name: z.string().min(1).max(80),
       environment: z.enum(["TESTNET", "LIVE"]),
-      apiKey: z.string().min(8).max(256),
-      apiSecret: z.string().min(8).max(256),
+      apiKey: z.string().trim().min(8).max(256),
+      apiSecret: z.string().trim().min(8).max(256),
     })
     .parse(req.body);
-  if (v.environment === "LIVE")
+  if (
+    v.provider === "BYBIT_EU" &&
+    (v.environment !== "LIVE" || v.readOnlyAcknowledged !== true)
+  )
+    return reply
+      .code(400)
+      .send({ error: "BYBIT_EU_LIVE_READ_ONLY_ACKNOWLEDGEMENT_REQUIRED" });
+  if (v.environment === "LIVE" && v.provider !== "BYBIT_EU")
     return reply
       .code(403)
       .send({ error: "LIVE_CONNECTIONS_DISABLED_IN_MVP_PREVIEW" });
@@ -497,6 +510,8 @@ app.post("/api/connections", async (req, reply) => {
     await audit(db, tid, "EXCHANGE_CONNECTED", {
       id,
       environment: v.environment,
+      provider: v.provider,
+      readOnly: v.provider === "BYBIT_EU",
     });
   });
   return reply.code(201).send({ id, status: "CONNECTED", permissions });
@@ -628,7 +643,9 @@ app.post("/api/bots", async (req, reply) => {
       tid,
     ]);
     await audit(db, tid, "BOT_CREATED", { id });
-    return reply.code(201).send({ id });
+    // Let the transaction commit before Fastify sends the success response.
+    reply.code(201);
+    return { id };
   });
 });
 app.post("/api/bots/:id/:action", async (req, reply) => {
