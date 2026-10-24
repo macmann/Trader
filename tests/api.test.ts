@@ -1,3 +1,4 @@
+import { jsonRequestOptions } from "../apps/web/src/http.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
@@ -145,6 +146,34 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
   });
   assert.equal(create.statusCode, 201, create.body);
   const botId = create.json().id;
+  // Reproduce the browser's original empty-JSON request before exercising the shared fix.
+  const emptyJson = await app.inject({
+    method: "POST",
+    url: `/api/bots/${botId}/start`,
+    headers: { ...a.headers, "Content-Type": "application/json" },
+  });
+  assert.equal(emptyJson.statusCode, 400);
+  assert.equal(emptyJson.json().error, "REQUEST_REJECTED");
+  const actionOptions = jsonRequestOptions("POST", a.headers["x-csrf-token"]);
+  for (const [action, status] of [
+    ["start", "STARTING"],
+    ["pause", "PAUSED"],
+    ["stop", "STOPPED"],
+  ]) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/bots/${botId}/${action}`,
+      headers: { ...a.headers, ...actionOptions.headers },
+      payload: actionOptions.body,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().status, status);
+    assert.equal(
+      (await app.inject({ url: "/api/bots", headers: a.headers })).json()[0]
+        .status,
+      status,
+    );
+  }
   const crossCreate = await app.inject({
     method: "POST",
     url: "/api/bots",
