@@ -28,6 +28,7 @@ type Bot = {
 type Connection = {
   id: string;
   name: string;
+  provider?: string;
   environment: string;
   status: string;
 };
@@ -40,6 +41,34 @@ async function api(path: string, method = "GET", data?: unknown) {
   });
   const value = await r.json();
   if (!r.ok) {
+    if (
+      path === "/auth/reauthenticate" &&
+      value.error === "INVALID_CREDENTIALS"
+    )
+      throw Error(
+        "Your platform password was not accepted. Exchange credentials were not checked.",
+      );
+    const guidance: Record<string, string> = {
+      API_KEY_OR_ENVIRONMENT_MISMATCH:
+        "The key does not match the selected endpoint. Testnet, Demo, global Live and EU Live use separate credentials. EU additionally requires broker-authorized API access.",
+      INVALID_SIGNATURE:
+        "Signature rejected. Check the matching API key and secret; create a new pair if necessary.",
+      EXCHANGE_CLOCK_SKEW:
+        "The server clock is outside Bybit's authentication window. Synchronize the Coolify host clock.",
+      IP_BINDING_ERROR:
+        "Allow your Coolify server's outbound IP in the API key settings.",
+      READ_ONLY_API_KEY_REQUIRED:
+        "Use a read-only API key for Bybit EU. Live trading is disabled.",
+      PERMISSION_ERROR:
+        "Check API permissions. Never enable withdrawals or transfers.",
+      API_KEY_EXPIRED:
+        "The API key has expired. Replace it in the exchange account.",
+    };
+    if (guidance[value.error])
+      throw Error(
+        guidance[value.error] +
+          (value.exchangeCode ? ` (Exchange code ${value.exchangeCode})` : ""),
+      );
     const detail =
       value.details
         ?.map((v: any) => `${v.path?.join(".")}: ${v.message}`)
@@ -69,7 +98,8 @@ function App() {
     [connections, setConnections] = useState<Connection[]>([]),
     [records, setRecords] = useState<any[]>([]),
     [busy, setBusy] = useState(false),
-    [dialog, setDialog] = useState("");
+    [dialog, setDialog] = useState(""),
+    [connectionProvider, setConnectionProvider] = useState("BYBIT");
   async function refresh() {
     const me = await api("/auth/me");
     csrf = me.csrf;
@@ -446,8 +476,11 @@ function App() {
                       [
                         "Exchange connections",
                         String(
-                          connections.filter((c) => c.status === "CONNECTED")
-                            .length,
+                          connections.filter(
+                            (c) =>
+                              c.status === "CONNECTED" &&
+                              c.environment === "TESTNET",
+                          ).length,
                         ),
                         "Independent, encrypted credentials",
                       ],
@@ -639,7 +672,11 @@ function App() {
                       <section className="panel connection" key={c.id}>
                         <div>
                           <h2>{c.name}</h2>
-                          <span className="badge">{c.environment}</span>{" "}
+                          <span className="badge">
+                            {c.environment === "LIVE"
+                              ? "LIVE — READ-ONLY"
+                              : c.environment}
+                          </span>{" "}
                           <span>{c.status}</span>
                         </div>
                         <button
@@ -752,19 +789,25 @@ function App() {
             <button className="close" onClick={() => setDialog("")}>
               ✕
             </button>
-            <div className="eyebrow">TESTNET WORKSPACE</div>
-            <h2>
-              {dialog === "bot"
-                ? "Create your bot"
-                : "Connect exchange Testnet"}
-            </h2>
+            <div className="eyebrow">
+              {dialog === "connection" && connectionProvider === "BYBIT_EU"
+                ? "LIVE ACCOUNT — READ-ONLY"
+                : "TESTNET WORKSPACE"}
+            </div>
+            <h2>{dialog === "bot" ? "Create your bot" : "Connect exchange"}</h2>
             {feedback}
             {dialog === "connection" ? (
               <form
                 onSubmit={submit(async (f) => {
+                  await api("/auth/reauthenticate", "POST", {
+                    password: f.get("password"),
+                  });
                   await api("/connections", "POST", {
                     name: f.get("name"),
-                    environment: "TESTNET",
+                    environment:
+                      f.get("provider") === "BYBIT_EU" ? "LIVE" : "TESTNET",
+                    readOnlyAcknowledged:
+                      f.get("readOnlyAcknowledged") === "on",
                     apiKey: f.get("apiKey"),
                     apiSecret: f.get("apiSecret"),
                     provider: f.get("provider"),
@@ -780,16 +823,29 @@ function App() {
                   Connection name
                   <input
                     name="name"
-                    defaultValue="My Bybit Testnet"
+                    key={connectionProvider}
+                    defaultValue={
+                      connectionProvider === "BYBIT_EU"
+                        ? "My Bybit EU (read-only)"
+                        : "My Testnet account"
+                    }
                     required
                     maxLength={80}
                   />
                 </label>
                 <label>
                   Provider
-                  <select name="provider">
+                  <select
+                    name="provider"
+                    value={connectionProvider}
+                    onChange={(e) => setConnectionProvider(e.target.value)}
+                  >
                     <option value="BYBIT">Bybit Testnet</option>
                     <option value="OKX">OKX Demo</option>
+                    <option value="BYBIT_EU">
+                      Bybit EU — LIVE, read-only preview (broker access
+                      required)
+                    </option>
                   </select>
                 </label>
                 <label>
@@ -814,10 +870,42 @@ function App() {
                     autoComplete="off"
                   />
                 </label>
+                {connectionProvider === "BYBIT_EU" && (
+                  <div role="note">
+                    <strong>LIVE ACCOUNT — READ-ONLY CONNECTION</strong>
+                    <p>
+                      Bybit EU requires broker-authorized third-party API
+                      access. Ordinary EU keys may be unsupported. Use a
+                      read-only key; this connection cannot run bots or
+                      submit/cancel orders. Testnet keys do not work here.
+                    </p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        name="readOnlyAcknowledged"
+                        required
+                      />
+                      I understand this connects a live EU account for read-only
+                      verification.
+                    </label>
+                  </div>
+                )}
+                <label>
+                  Confirm your platform password
+                  <input
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                  />
+                </label>
                 <p className="muted">
                   Credentials are verified with the selected exchange before
-                  encrypted storage. Enable Spot trading, disable withdrawals
-                  and transfers.
+                  encrypted storage.{" "}
+                  {connectionProvider === "BYBIT_EU"
+                    ? "Use a read-only EU key."
+                    : "Enable Spot trading for Testnet."}{" "}
+                  Withdrawals and transfers must be disabled.
                 </p>
                 <button className="primary" disabled={busy}>
                   {busy ? "Verifying…" : "Test connection & save"}
@@ -859,7 +947,11 @@ function App() {
                   <select name="connectionId" required>
                     <option value="">Select a connected Testnet account</option>
                     {connections
-                      .filter((c) => c.status === "CONNECTED")
+                      .filter(
+                        (c) =>
+                          c.status === "CONNECTED" &&
+                          c.environment === "TESTNET",
+                      )
                       .map((c) => (
                         <option value={c.id} key={c.id}>
                           {c.name}

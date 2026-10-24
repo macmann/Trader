@@ -22,6 +22,12 @@ export type ExchangeAdapter = Pick<
 export const providers = [
   { id: "BYBIT", name: "Bybit Testnet", environment: "TESTNET" },
   { id: "OKX", name: "OKX Demo", environment: "TESTNET" },
+  {
+    id: "BYBIT_EU",
+    name: "Bybit EU (LIVE, read-only preview; broker access required)",
+    environment: "LIVE",
+    readOnly: true,
+  },
 ] as const;
 export function instrumentId(symbol: string) {
   if (!["BTCUSDT", "ETHUSDT", "SOLUSDT"].includes(symbol))
@@ -316,6 +322,8 @@ export function exchangeAdapter(
   environment: "TESTNET" | "LIVE",
   credentials?: ExchangeCredentials,
 ): ExchangeAdapter {
+  if (provider === "BYBIT_EU")
+    return new BybitAdapter(environment, credentials, "EU");
   if (environment !== "TESTNET") throw new ExchangeError(0, "LIVE_DISABLED");
   if (provider === "BYBIT") return new BybitAdapter(environment, credentials);
   if (provider === "OKX") return new OKXAdapter(environment, credentials);
