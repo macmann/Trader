@@ -1,6 +1,8 @@
+import { BotMonitor } from "./BotMonitor.tsx";
+import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
 import { jsonRequestOptions } from "./http.ts";
 import { AdminSettings } from "./AdminSettings.tsx";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 import { TradingDesk } from "./TradingDesk.tsx";
@@ -96,15 +98,58 @@ function App() {
     [records, setRecords] = useState<any[]>([]),
     [busy, setBusy] = useState(false),
     [dialog, setDialog] = useState(""),
-    [connectionProvider, setConnectionProvider] = useState("BYBIT");
+    [connectionProvider, setConnectionProvider] = useState("BYBIT"),
+    [selectedBotId, setSelectedBotId] = useState<string | null>(null),
+    [pendingActions, setPendingActions] = useState<Record<string, string>>({});
+  const actionLocks = useRef(new Set<string>()),
+    refreshEpoch = useRef(0);
+  useEffect(() => setSelectedBotId(null), [user?.tenantId]);
   async function refresh() {
+    const epoch = ++refreshEpoch.current;
     const me = await api("/auth/me");
+    if (epoch !== refreshEpoch.current) return;
     csrf = me.csrf;
-    setUser(me);
     if (me.verified) {
       const [b, c] = await Promise.all([api("/bots"), api("/connections")]);
+      if (epoch !== refreshEpoch.current) return;
       setBots(b);
       setConnections(c);
+    } else {
+      setBots([]);
+      setConnections([]);
+    }
+    setUser(me);
+  }
+  async function botAction(id: string, action: string) {
+    if (actionLocks.current.has(id)) return;
+    actionLocks.current.add(id);
+    ++refreshEpoch.current;
+    setPendingActions((old) => ({ ...old, [id]: action }));
+    try {
+      const result = await api(`/bots/${id}/${action}`, "POST");
+      ++refreshEpoch.current;
+      setBots((old) =>
+        old.map((bot) =>
+          bot.id === id ? { ...bot, status: result.status } : bot,
+        ),
+      );
+      if (action === "start") {
+        setPage("Bots");
+        setSelectedBotId(id);
+        setNotice(
+          result.unchanged
+            ? "Bot is already starting or running."
+            : "Start requested. The monitor will show reconciliation, data readiness and any blockers.",
+        );
+      }
+      await refresh();
+    } finally {
+      actionLocks.current.delete(id);
+      setPendingActions((old) => {
+        const next = { ...old };
+        delete next[id];
+        return next;
+      });
     }
   }
   async function run(fn: () => Promise<void>) {
@@ -500,6 +545,21 @@ function App() {
                       + Create bot
                     </button>
                   </div>
+                  {selectedBotId && page === "Bots" && (
+                    <BotMonitor
+                      key={`${user.tenantId}:${selectedBotId}`}
+                      id={selectedBotId}
+                      request={api}
+                      onClose={() => setSelectedBotId(null)}
+                      onAction={async (action) => {
+                        await run(() => botAction(selectedBotId, action));
+                      }}
+                      pending={pendingActions[selectedBotId]}
+                      knownStatus={
+                        bots.find((bot) => bot.id === selectedBotId)?.status
+                      }
+                    />
+                  )}
                   {!bots.length ? (
                     <section className="empty panel">
                       <div className="empty-icon">◇</div>
@@ -574,22 +634,41 @@ function App() {
                             SL {b.config.stopLossPct}% · TP{" "}
                             {b.config.takeProfitPct}% · AI {b.ai_mode ?? "OFF"}
                           </p>
+                          <button
+                            className="monitor-open"
+                            onClick={() => {
+                              setPage("Bots");
+                              setSelectedBotId(b.id);
+                            }}
+                          >
+                            View monitor · positions, fills & decisions →
+                          </button>
                           <div className="actions">
                             {["start", "pause", "stop"].map((action) => (
                               <button
                                 key={action}
-                                disabled={busy}
+                                disabled={
+                                  busy ||
+                                  user.role === "VIEWER" ||
+                                  !!pendingActions[b.id] ||
+                                  !botActionEnabled(b.status, action)
+                                }
                                 onClick={() =>
-                                  void run(async () => {
-                                    await api(
-                                      `/bots/${b.id}/${action}`,
-                                      "POST",
-                                    );
-                                    await refresh();
-                                  })
+                                  void run(() => botAction(b.id, action))
                                 }
                               >
-                                {action}
+                                {pendingActions[b.id] === action
+                                  ? "Sending…"
+                                  : action === "start" &&
+                                      b.status === "STARTING"
+                                    ? "Starting…"
+                                    : action === "start" &&
+                                        b.status === "RUNNING"
+                                      ? "Running"
+                                      : action === "start" &&
+                                          b.status === "RISK_LOCKED"
+                                        ? "Retry start checks"
+                                        : action}
                               </button>
                             ))}
                           </div>

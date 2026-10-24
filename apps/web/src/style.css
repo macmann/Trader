@@ -737,3 +737,116 @@ label small {
 .platform-tabs {
   position: static;
 }
+
+.bot-monitor {
+  margin: 20px 0 28px;
+  scroll-margin-top: 24px;
+  border-color: #426345;
+}
+.monitor-header {
+  align-items: flex-start;
+  gap: 18px;
+}
+.monitor-state,
+.monitor-tabs,
+.monitor-history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin: 16px 0;
+}
+.monitor-state {
+  padding: 14px;
+  background: #0c141e;
+  border-radius: 8px;
+}
+.monitor-tabs button.selected {
+  color: #b7f779;
+  border-color: #b7f779;
+  background: #1c3026;
+}
+.monitor-alert {
+  border-left: 3px solid #e9ad65;
+  background: #29241c;
+  padding: 14px 18px;
+  margin: 18px 0;
+  overflow-wrap: anywhere;
+}
+.monitor-alert p {
+  margin: 8px 0;
+}
+.monitor-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+.monitor-metrics .metric {
+  min-width: 0;
+}
+.monitor-metrics strong {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  margin: 20px 0;
+}
+.monitor-grid section {
+  background: #0c141e;
+  padding: 18px;
+  border-radius: 8px;
+  min-width: 0;
+}
+.bot-monitor dl {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(0, 1.5fr);
+  gap: 10px 16px;
+}
+.bot-monitor dt {
+  color: #92a3b6;
+}
+.bot-monitor dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.bot-monitor .table-wrap {
+  overflow-x: auto;
+}
+.bot-monitor td {
+  max-width: 420px;
+  min-width: 100px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.monitor-footnote {
+  color: #92a3b6;
+  border-top: 1px solid #283645;
+  padding-top: 16px;
+  font-size: 12px;
+}
+.monitor-open {
+  width: 100%;
+  margin-top: 12px;
+  color: #b7f779;
+}
+@media (max-width: 800px) {
+  .monitor-grid {
+    grid-template-columns: 1fr;
+  }
+  .monitor-header {
+    flex-direction: column;
+  }
+  .bot-monitor dl {
+    grid-template-columns: 1fr;
+  }
+  .monitor-tabs {
+    gap: 6px;
+  }
+  .monitor-tabs button {
+    font-size: 12px;
+  }
+}
