@@ -166,12 +166,10 @@ app.setErrorHandler((err, req, reply) => {
       details: err.issues.map((v) => ({ path: v.path, message: v.message })),
     });
   if (err instanceof ExchangeError)
-    return reply
-      .code(422)
-      .send({
-        error: err.status,
-        exchangeCode: Number.isSafeInteger(err.code) ? err.code : 0,
-      });
+    return reply.code(422).send({
+      error: err.status,
+      exchangeCode: Number.isSafeInteger(err.code) ? err.code : 0,
+    });
   const e = err as { code?: string; statusCode?: number };
   if (e.code === "23505")
     return reply.code(409).send({ error: "ALREADY_EXISTS" });
@@ -446,7 +444,9 @@ app.post("/api/connections", async (req, reply) => {
     return reply.code(403).send({ error: "REAUTHENTICATION_REQUIRED" });
   const v = z
     .object({
-      provider: z.enum(["BYBIT", "OKX", "BYBIT_EU"]).default("BYBIT"),
+      provider: z
+        .enum(["BYBIT", "BYBIT_EU_TESTNET", "OKX", "BYBIT_EU"])
+        .default("BYBIT"),
       readOnlyAcknowledged: z.boolean().optional(),
       passphrase: z.string().min(1).max(256).optional(),
       name: z.string().min(1).max(80),

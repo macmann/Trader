@@ -1,3 +1,4 @@
+import { bybitTestnetEndpoints } from "../../../packages/exchanges/src/index.ts";
 import { runtimeProvider } from "../../api/src/installation.ts";
 import { writeFile } from "node:fs/promises";
 import { PrivateFeedState } from "./private-state.ts";
@@ -65,16 +66,16 @@ const feeds = new Map<
 const market = new Map<string, number>();
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
 const wsOptions = proxyUrl ? { agent: new HttpsProxyAgent(proxyUrl) } : {};
-let publicSocket: WebSocket | null = null;
+const publicSockets = new Map<"BYBIT" | "BYBIT_EU_TESTNET", WebSocket>();
 let okxSocket: WebSocket | null = null;
 let closing = false;
-function publicFeed() {
+function publicFeed(provider: "BYBIT" | "BYBIT_EU_TESTNET") {
   if (closing) return;
   const socket = new WebSocket(
-    "wss://stream-testnet.bybit.com/v5/public/spot",
+    bybitTestnetEndpoints(provider).public,
     wsOptions,
   );
-  publicSocket = socket;
+  publicSockets.set(provider, socket);
   socket.on("open", () =>
     socket.send(
       JSON.stringify({
@@ -94,13 +95,16 @@ function publicFeed() {
         Number.isFinite(message.ts) &&
         Math.abs(Date.now() - message.ts) < 45000
       )
-        market.set("BYBIT:" + message.topic.split(".").at(-1), Date.now());
+        market.set(
+          provider + ":" + message.topic.split(".").at(-1),
+          Date.now(),
+        );
     } catch {}
   });
   socket.on("error", () => socket.close());
   socket.on("close", () => {
-    for (const symbol of symbols) market.delete("BYBIT:" + symbol);
-    if (!closing) setTimeout(publicFeed, 5000);
+    for (const symbol of symbols) market.delete(provider + ":" + symbol);
+    if (!closing) setTimeout(() => publicFeed(provider), 5000);
   });
 }
 function okxPublicFeed() {
@@ -149,12 +153,14 @@ function privateFeed(
   const socket = new WebSocket(
     provider === "OKX"
       ? "wss://wspap.okx.com:8443/ws/v5/private"
-      : "wss://stream-testnet.bybit.com/v5/private",
+      : bybitTestnetEndpoints(provider as "BYBIT" | "BYBIT_EU_TESTNET").private,
     wsOptions,
   );
   feed = {
     socket,
-    state: new PrivateFeedState(provider as "BYBIT" | "OKX"),
+    state: new PrivateFeedState(
+      provider as "BYBIT" | "BYBIT_EU_TESTNET" | "OKX",
+    ),
     provider,
   };
   feeds.set(id, feed);
@@ -757,11 +763,12 @@ export async function startWorker() {
       liveEnabled: false,
     }),
   );
-  publicFeed();
+  publicFeed("BYBIT");
+  publicFeed("BYBIT_EU_TESTNET");
   okxPublicFeed();
   const shutdown = () => {
     closing = true;
-    publicSocket?.close();
+    for (const socket of publicSockets.values()) socket.close();
     okxSocket?.close();
     for (const feed of feeds.values()) feed.socket.close();
   };
@@ -774,8 +781,9 @@ export async function startWorker() {
           f.provider === "OKX" ? "ping" : JSON.stringify({ op: "ping" }),
         );
     if (okxSocket?.readyState === WebSocket.OPEN) okxSocket.send("ping");
-    if (publicSocket?.readyState === WebSocket.OPEN)
-      publicSocket.send(JSON.stringify({ op: "ping" }));
+    for (const socket of publicSockets.values())
+      if (socket.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify({ op: "ping" }));
   }, 20000);
   let newsJob: Promise<void> | null = null,
     marketJob: Promise<void> | null = null,

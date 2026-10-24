@@ -72,3 +72,19 @@ test("OKX requires both Spot order and account subscription acknowledgements", (
   s.receive(msg({ event: "error", code: "60012" }), 45003);
   assert.equal(s.ready(45004), false);
 });
+
+test("EU Testnet private events use Bybit authentication and subscription readiness", () => {
+  const s = new PrivateFeedState("BYBIT_EU_TESTNET");
+  assert.equal(
+    s.receive(msg({ op: "auth", success: true }), 1000),
+    "AUTHENTICATED",
+  );
+  assert.equal(s.ready(1001), false);
+  s.receive(
+    msg({ op: "subscribe", success: true, req_id: "private-subscriptions" }),
+    1002,
+  );
+  assert.equal(s.ready(1003), true);
+  s.invalidate();
+  assert.equal(s.ready(1004), false);
+});

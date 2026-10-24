@@ -50,7 +50,7 @@ async function api(path: string, method = "GET", data?: unknown) {
       );
     const guidance: Record<string, string> = {
       API_KEY_OR_ENVIRONMENT_MISMATCH:
-        "The key does not match the selected endpoint. Testnet, Demo, global Live and EU Live use separate credentials. EU additionally requires broker-authorized API access.",
+        "The key does not match the selected endpoint. Global Testnet (.com), EU Testnet (.eu), Demo and Live use separate credentials. Select the same site where you created the key.",
       INVALID_SIGNATURE:
         "Signature rejected. Check the matching API key and secret; create a new pair if necessary.",
       EXCHANGE_CLOCK_SKEW:
@@ -840,7 +840,10 @@ function App() {
                     value={connectionProvider}
                     onChange={(e) => setConnectionProvider(e.target.value)}
                   >
-                    <option value="BYBIT">Bybit Testnet</option>
+                    <option value="BYBIT">Bybit Global Testnet (.com)</option>
+                    <option value="BYBIT_EU_TESTNET">
+                      Bybit EU Testnet (.eu)
+                    </option>
                     <option value="OKX">OKX Demo</option>
                     <option value="BYBIT_EU">
                       Bybit EU — LIVE, read-only preview (broker access
@@ -875,7 +878,7 @@ function App() {
                     <strong>LIVE ACCOUNT — READ-ONLY CONNECTION</strong>
                     <p>
                       Bybit EU requires broker-authorized third-party API
-                      access. Ordinary EU keys may be unsupported. Use a
+                      access. Testnet keys are separate from mainnet. Use a
                       read-only key; this connection cannot run bots or
                       submit/cancel orders. Testnet keys do not work here.
                     </p>

@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { BybitAdapter, ExchangeError } from "../packages/core/src/index.ts";
-import { exchangeAdapter } from "../packages/exchanges/src/index.ts";
+import {
+  exchangeAdapter,
+  bybitTestnetEndpoints,
+} from "../packages/exchanges/src/index.ts";
 const credentials = {
   apiKey: "regional-fixture-key",
   apiSecret: "regional-fixture-secret",
@@ -111,4 +114,40 @@ test("Bybit authentication diagnostics retain only numeric codes and safe status
     });
     assert.equal(calls, 1);
   }
+});
+
+test("EU Testnet REST and private/public streams stay separate from global Testnet and EU mainnet", async () => {
+  const requests: string[] = [];
+  const adapter = new BybitAdapter("TESTNET", credentials, "EU", (async (
+    input: any,
+  ) => {
+    const url = new URL(input);
+    requests.push(url.origin);
+    assert.equal(url.origin, "https://api-testnet.bybit.eu");
+    return reply(
+      url.pathname === "/v5/user/query-api"
+        ? { readOnly: 0, permissions: { Spot: ["SpotTrade"] } }
+        : { list: [] },
+    );
+  }) as typeof fetch);
+  assert.equal((await adapter.validateCredentials()).trading, true);
+  assert.equal(requests.length, 2);
+  const selected = exchangeAdapter(
+    "BYBIT_EU_TESTNET",
+    "TESTNET",
+    credentials,
+  ) as BybitAdapter;
+  assert.equal(selected.base, "https://api-testnet.bybit.eu");
+  assert.throws(
+    () => exchangeAdapter("BYBIT_EU_TESTNET", "LIVE", credentials),
+    /LIVE_DISABLED/,
+  );
+  assert.deepEqual(bybitTestnetEndpoints("BYBIT_EU_TESTNET"), {
+    public: "wss://stream-testnet.bybit.eu/v5/public/spot",
+    private: "wss://stream-testnet.bybit.eu/v5/private",
+  });
+  assert.equal(
+    bybitTestnetEndpoints("BYBIT").private,
+    "wss://stream-testnet.bybit.com/v5/private",
+  );
 });

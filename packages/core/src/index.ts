@@ -175,11 +175,11 @@ export class BybitAdapter {
     readonly region: "GLOBAL" | "EU" = "GLOBAL",
     private transport: typeof fetch = fetch,
   ) {
-    if (region === "EU" && environment !== "LIVE")
-      throw new ExchangeError(0, "BYBIT_EU_REQUIRES_LIVE_ENVIRONMENT");
     this.base =
       region === "EU"
-        ? "https://api.bybit.eu"
+        ? environment === "TESTNET"
+          ? "https://api-testnet.bybit.eu"
+          : "https://api.bybit.eu"
         : environment === "TESTNET"
           ? "https://api-testnet.bybit.com"
           : "https://api.bybit.com";
@@ -190,7 +190,7 @@ export class BybitAdapter {
     method: "GET" | "POST" = "GET",
     auth = true,
   ): Promise<any> {
-    if (this.region === "EU" && method !== "GET")
+    if (this.region === "EU" && this.environment === "LIVE" && method !== "GET")
       throw new ExchangeError(0, "LIVE_TRADING_DISABLED");
     const payload =
       method === "GET"
@@ -258,7 +258,7 @@ export class BybitAdapter {
       (p.Wallet ?? []).some((x: string) => /withdraw|transfer/i.test(x)) ||
       (p.Fund ?? []).length > 0;
     if (dangerous) throw new ExchangeError(0, "PERMISSION_ERROR");
-    if (this.region === "EU") {
+    if (this.region === "EU" && this.environment === "LIVE") {
       if (r.readOnly !== 1)
         throw new ExchangeError(0, "READ_ONLY_API_KEY_REQUIRED");
       await this.getBalances();
@@ -272,6 +272,7 @@ export class BybitAdapter {
     }
     if (!(p.Spot ?? []).includes("SpotTrade") || r.readOnly !== 0)
       throw new ExchangeError(0, "PERMISSION_ERROR");
+    if (this.region === "EU") await this.getBalances();
     return {
       readAccount: true,
       trading: true,
