@@ -18,7 +18,9 @@ const descriptions: Record<string, string> = {
   RECONCILIATION_REQUIRED:
     "Exchange orders and fills have not reconciled with the ledger. New execution is locked; review orders and activity before retrying.",
   UNEXPECTED_ACCOUNT_POSITION:
-    "Exchange asset holdings differ from this platform's tracked position. Check manual trades or other bots using this account; do not reset the ledger to hide a mismatch.",
+    "Exchange holdings changed beyond the saved non-bot inventory plus tracked bot positions. Review the account changes and recorded fills.",
+  INVENTORY_BASELINE_REVIEW_REQUIRED:
+    "An existing trading ledger and exchange holdings need verified reconciliation before an inventory baseline can be established.",
   UNEXPECTED_EXCHANGE_EXECUTION:
     "The exchange returned a fill that does not belong to known platform orders. Check manual trades or other automation using this account; do not reset history to conceal the mismatch.",
   UNEXPECTED_EXCHANGE_ORDER:
@@ -450,6 +452,39 @@ export function BotMonitor({
             unavailable when the latest mark is stale. No pending-order reserve
             is added to equity.
           </p>
+          <section>
+            <h3>Account inventory isolation</h3>
+            <p className="muted">
+              Existing holdings are excluded from bot capital, positions and
+              P&amp;L. Bots sell only inventory recorded in their own ledger.
+            </p>
+            {snapshot.inventory ? (
+              <dl>
+                <dt>Asset</dt>
+                <dd>{snapshot.inventory.asset}</dd>
+                <dt>Non-bot holdings at enrollment</dt>
+                <dd>{snapshot.inventory.external_quantity}</dd>
+                <dt>All bots on this connection</dt>
+                <dd>{snapshot.inventory.managed_quantity}</dd>
+                <dt>Last reconciled account total</dt>
+                <dd>{snapshot.inventory.last_total}</dd>
+                <dt>Last inventory check</dt>
+                <dd>{when(snapshot.inventory.last_checked_at)}</dd>
+              </dl>
+            ) : (
+              <p>
+                Inventory baseline will be captured during the first successful
+                start checks.
+              </p>
+            )}
+            {m?.error_snapshot?.inventory && (
+              <p role="status">
+                Last mismatch: expected {m.error_snapshot.inventory.expected},
+                exchange reported {m.error_snapshot.inventory.actual}{" "}
+                {m.error_snapshot.inventory.asset}.
+              </p>
+            )}
+          </section>
           <div className="monitor-grid">
             <section>
               <h3>Worker and market monitoring</h3>

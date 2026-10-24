@@ -1,3 +1,4 @@
+import { InventoryError } from "./inventory.ts";
 import { tenant } from "../../api/src/db.ts";
 import { ExchangeError } from "../../../packages/core/src/index.ts";
 export type BotObservation = {
@@ -10,6 +11,7 @@ export type BotObservation = {
   reconciled?: boolean;
   executionEnabled?: boolean;
   exchangeCode?: number;
+  inventory?: InventoryError["details"];
   protection?: {
     stopPrice: number;
     takeProfitPrice: number;
@@ -21,6 +23,9 @@ export type BotObservation = {
 export function failureObservation(error: unknown): BotObservation {
   const known = [
     "UNEXPECTED_ACCOUNT_POSITION",
+    "ACCOUNT_BALANCE_INVALID",
+    "ACCOUNT_POSITION_INVALID",
+    "INVENTORY_BASELINE_REVIEW_REQUIRED",
     "LEDGER_REBUILD_REQUIRED",
     "RECONCILIATION_WINDOW_EXCEEDED",
     "UNEXPECTED_EXCHANGE_ORDER",
@@ -46,6 +51,7 @@ export function failureObservation(error: unknown): BotObservation {
     "UNSUPPORTED_EXECUTION_TYPE",
   ];
   return {
+    ...(error instanceof InventoryError ? { inventory: error.details } : {}),
     stage: "CHECK_FAILED",
     reasons: [
       error instanceof ExchangeError

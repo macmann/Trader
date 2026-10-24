@@ -13,8 +13,10 @@ import {
 import { advancedConfig } from "../packages/trading/src/index.ts";
 import { portfolioSnapshot } from "../apps/api/src/portfolio.ts";
 import { reconcile } from "../apps/worker/src/ledger.ts";
+import { assetTotal, checkInventory } from "../apps/worker/src/inventory.ts";
 const admin = new pg.Pool({ connectionString: process.env.DATABASE_ADMIN_URL });
 class Broker extends BybitAdapter {
+  initialBtc = "0";
   price = 100;
   creates = 0;
   cancels = 0;
@@ -69,7 +71,9 @@ class Broker extends BybitAdapter {
   }
   override async getBalances() {
     let cash = new Decimal(1000);
-    const assets: Record<string, Decimal> = {};
+    const assets: Record<string, Decimal> = {
+      BTC: new Decimal(this.initialBtc),
+    };
     for (const f of this.fills) {
       const o = this.orders.get(f.orderLinkId),
         base = o.symbol.replace(/USDT$/, ""),
@@ -763,4 +767,141 @@ test("worker observations explain data readiness and protection without changing
   assert.ok(observations.some((v) => v.stage === "EVALUATING"));
   assert.ok(observations.some((v) => v.reconciled === true));
   assert.equal(f.broker.creates, 1);
+});
+
+test("prefunded inventory survives worker buys, restart and exit without becoming bot property", async () => {
+  const f = await fixture();
+  f.broker.initialBtc = "2";
+  await run(f);
+  await run(f);
+  let state = await rows(f);
+  assert.equal(state.bot.status, "RUNNING");
+  assert.ok(Number(state.position.quantity) > 0);
+  assert.ok(Number(state.position.quantity) < 1);
+  const inventory = () =>
+    tenant(
+      f.tid,
+      async (db) =>
+        (
+          await db.query(
+            "SELECT * FROM connection_inventory WHERE connection_id=$1",
+            [f.cid],
+          )
+        ).rows[0],
+    );
+  assert.equal(Number((await inventory()).external_quantity), 2);
+  await assert.rejects(
+    tenant(f.tid, (db) =>
+      db.query(
+        "UPDATE connection_inventory SET external_quantity=0 WHERE connection_id=$1",
+        [f.cid],
+      ),
+    ),
+    /permission denied/,
+  );
+  f.broker.price = 160;
+  await run(f);
+  await tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker));
+  state = await rows(f);
+  assert.equal(Number(state.position.quantity), 0);
+  const balances = await f.broker.getBalances();
+  assert.equal(
+    balances.list[0].coin.find((c) => c.coin === "BTC")?.walletBalance,
+    "2",
+  );
+  assert.equal(Number((await inventory()).external_quantity), 2);
+  f.broker.initialBtc = "3";
+  await assert.rejects(run(f), /UNEXPECTED_ACCOUNT_POSITION/);
+  assert.equal(Number((await inventory()).external_quantity), 2);
+});
+
+test("pre-enrollment exchange history is excluded but later manual fills remain blocked", async () => {
+  const f = await fixture();
+  f.broker.initialBtc = "2";
+  const historic = {
+    execId: "historic",
+    orderLinkId: "manual-before-enrollment",
+    execTime: String(Date.now() - 86400000),
+  };
+  const original = f.broker.getExecutions.bind(f.broker);
+  f.broker.getExecutions = async () => ({
+    list: [historic, ...(await original()).list],
+  });
+  await run(f);
+  await run(f);
+  assert.equal((await rows(f)).bot.status, "RUNNING");
+  f.broker.getExecutions = async () => ({
+    list: [
+      historic,
+      ...(await original()).list,
+      {
+        execId: "later",
+        orderLinkId: "manual-after-enrollment",
+        execTime: String(Date.now() + 1000),
+      },
+    ],
+  });
+  await assert.rejects(run(f), /UNEXPECTED_EXCHANGE_EXECUTION/);
+  assert.equal(f.broker.creates, 1);
+});
+
+test("connection inventory sums independent bots and is invisible to another tenant", async () => {
+  const f = await fixture(),
+    other = await fixture(),
+    second = randomUUID();
+  await tenant(f.tid, async (db) => {
+    await checkInventory(db, f.tid, f.cid, "BTC", new Decimal(2), true);
+    await db.query(
+      "INSERT INTO bots(id,tenant_id,connection_id,name,config) VALUES($1,$2,$3,'Second','{}')",
+      [second, f.tid, f.cid],
+    );
+    await db.query(
+      "INSERT INTO positions(bot_id,tenant_id,quantity) VALUES($1,$2,0.1)",
+      [second, f.tid],
+    );
+    await db.query("UPDATE positions SET quantity=0.2 WHERE bot_id=$1", [
+      f.bid,
+    ]);
+    const inventory = await checkInventory(
+      db,
+      f.tid,
+      f.cid,
+      "BTC",
+      new Decimal("2.3"),
+    );
+    assert.equal(inventory.managed.toFixed(), "0.3");
+    assert.equal(inventory.external.toFixed(), "2");
+  });
+  assert.equal(
+    await tenant(
+      other.tid,
+      async (db) =>
+        (
+          await db.query(
+            "SELECT * FROM connection_inventory WHERE connection_id=$1",
+            [f.cid],
+          )
+        ).rowCount,
+    ),
+    0,
+  );
+  await assert.rejects(
+    tenant(f.tid, (db) =>
+      db.query("DELETE FROM connection_inventory WHERE connection_id=$1", [
+        f.cid,
+      ]),
+    ),
+    /permission denied/,
+  );
+});
+test("malformed account snapshots cannot establish an inventory baseline", () => {
+  for (const value of [
+    null,
+    {},
+    { list: [{ coin: [{ coin: "BTC" }] }] },
+    { list: [{ coin: [{ coin: "BTC", walletBalance: "-1" }] }] },
+    { list: [{ coin: [{ coin: "BTC", walletBalance: "NaN" }] }] },
+  ])
+    assert.throws(() => assetTotal(value, "BTC"));
+  assert.equal(assetTotal({ list: [{ coin: [] }] }, "BTC").toFixed(), "0");
 });

@@ -1,3 +1,4 @@
+import { assetTotal, checkInventory } from "./inventory.ts";
 import { testnetExecutionEnabled } from "../../api/src/installation.ts";
 import { entitlements } from "../../api/src/platform.ts";
 import type { ExchangeAdapter } from "../../../packages/exchanges/src/index.ts";
@@ -41,7 +42,7 @@ export async function dispatchIntent(
   await lockPortfolio(db, tid);
   const o = (
     await db.query(
-      "SELECT o.*,b.status AS bot_status,b.config,b.ai_mode,c.environment,c.status AS connection_status,s.ai_analysis_id,s.decision FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id LEFT JOIN signals s ON s.id=o.signal_id AND s.tenant_id=o.tenant_id WHERE o.id=$1 AND o.tenant_id=$2 FOR UPDATE OF o,b,c",
+      "SELECT o.*,b.status AS bot_status,b.config,b.ai_mode,c.environment,c.id AS connection_id,c.status AS connection_status,s.ai_analysis_id,s.decision FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id LEFT JOIN signals s ON s.id=o.signal_id AND s.tenant_id=o.tenant_id WHERE o.id=$1 AND o.tenant_id=$2 FOR UPDATE OF o,b,c",
       [id, tid],
     )
   ).rows[0];
@@ -178,6 +179,29 @@ export async function dispatchIntent(
         await cancelInternal(db, tid, id, "PRICE_MOVED_OUTSIDE_BUDGET");
         return false;
       }
+    }
+  }
+  const finalBalances = await adapter.getBalances();
+  const inventory = await checkInventory(
+    db,
+    tid,
+    o.connection_id,
+    o.symbol.replace(/USDT$/, ""),
+    assetTotal(finalBalances, o.symbol.replace(/USDT$/, "")),
+  );
+  if (o.side === "Sell") {
+    const own = (
+      await db.query(
+        "SELECT quantity FROM positions WHERE bot_id=$1 AND tenant_id=$2",
+        [o.bot_id, tid],
+      )
+    ).rows[0];
+    if (
+      new Decimal(o.quantity).gt(own.quantity) ||
+      new Decimal(o.quantity).gt(inventory.managed)
+    ) {
+      await cancelInternal(db, tid, id, "BOT_OWNED_INVENTORY_REQUIRED");
+      return false;
     }
   }
   // The intent exists durably before this function. Commit the attempted-send marker before I/O.

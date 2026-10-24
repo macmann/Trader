@@ -67,6 +67,37 @@ test("reconciliation applies exchange fills exactly once across restart and hand
     execTime: String(Date.now()),
   };
   let fills = [fill];
+  adapter.getBalances = async () => ({
+    list: [
+      {
+        coin: [
+          {
+            coin: "BTC",
+            walletBalance: String(
+              fills
+                .filter((f) => f.orderLinkId === clientId)
+                .reduce((n, f) => n + Number(f.execQty), 0) -
+                fills
+                  .filter(
+                    (f) => f.orderLinkId !== clientId && f.execQty === "0.5",
+                  )
+                  .reduce((n, f) => n + Number(f.execQty), 0),
+            ),
+          },
+          {
+            coin: "ETH",
+            walletBalance: String(
+              fills
+                .filter(
+                  (f) => f.orderLinkId !== clientId && f.execQty !== "0.5",
+                )
+                .reduce((n, f) => n + Number(f.execQty), 0),
+            ),
+          },
+        ],
+      },
+    ],
+  });
   adapter.getOpenOrders = async () => ({ list: [] });
   adapter.getExecutions = async () => ({ list: fills });
   adapter.getOrder = async () => ({

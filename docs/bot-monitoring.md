@@ -37,3 +37,11 @@ Migration `008_bot_monitoring.sql` adds tenant-scoped RLS-protected runs and wor
 Worker observations are persisted separately from financial transactions. Monitoring write failures do not roll back trading/accounting operations. Worker error codes are retained across idle risk-locked checks and cleared by a later successful active evaluation. Monitoring does not remove or bypass risk, idempotency, tenant isolation, execution permission or Live trading controls.
 
 Deploy web and worker together through the existing Compose migration flow. No new environment variables are required. Real exchange acceptance, market/account connectivity and exchange-native protection remain independent operator checks. Local fixtures and browser tests do not demonstrate profitability or certify live trading.
+
+### Prefunded accounts
+
+Migration 009 adds a tenant-scoped inventory baseline. On the first successful reconciliation of a fresh connection with no submitted orders or recorded bot fills, current base-asset holdings are saved as non-bot inventory. Existing exchange fills dated before that enrollment are excluded from bot history; unknown open orders still block enrollment. The baseline is immutable to the application role and persists across restarts.
+
+The monitor's Account inventory isolation panel separates non-bot holdings, aggregate tracked holdings across all bots on the connection, and the last reconciled exchange total. Non-bot holdings never enter bot capital, position quantity, cost basis or P&L. A final execution check prevents a sell from exceeding that bot's tracked quantity. The account total must reconcile to non-bot holdings plus all tracked bot positions.
+
+After deploying, a fresh bot previously locked only because the account was prefunded can use Retry Start Checks once; no environment changes, manual sale or ledger reset are needed. Later untracked trades or changes to base-asset holdings still lock execution. An existing used ledger with unexplained surplus requires verified reconciliation rather than silently classifying missing fills as non-bot assets. The baseline records accounting ownership; it does not reserve or transfer exchange assets.

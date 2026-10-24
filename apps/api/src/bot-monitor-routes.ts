@@ -46,6 +46,18 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
             [id, tid],
           )
         ).rows[0] ?? null;
+      const inventory =
+        (
+          await db.query(
+            "SELECT i.*, (SELECT COALESCE(sum(p.quantity),0) FROM bots b LEFT JOIN positions p ON p.bot_id=b.id AND p.tenant_id=b.tenant_id WHERE b.connection_id=i.connection_id AND b.tenant_id=i.tenant_id AND b.symbol=$3) AS managed_quantity FROM connection_inventory i WHERE i.tenant_id=$1 AND i.connection_id=$2 AND i.asset=$4",
+            [
+              tid,
+              bot.connection_id,
+              bot.symbol,
+              bot.symbol.replace(/USDT$/, ""),
+            ],
+          )
+        ).rows[0] ?? null;
       const pending = (
         await db.query(
           "SELECT id,client_id,exchange_id,side,symbol,quantity,state,order_type,limit_price,requested_notional,created_at,updated_at,run_id FROM orders WHERE tenant_id=$1 AND bot_id=$2 AND NOT(state=ANY($3::text[])) ORDER BY created_at DESC,id",
@@ -126,6 +138,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         workerFresh: fresh,
         priceFresh,
         position,
+        inventory,
         openOrders: pending,
         summary: {
           ...summary,

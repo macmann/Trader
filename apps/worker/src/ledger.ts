@@ -1,3 +1,4 @@
+import { assetTotal, checkInventory, managedAssets } from "./inventory.ts";
 import type { ExchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
@@ -217,7 +218,7 @@ export async function reconcile(
 ) {
   const connection = (
     await db.query(
-      "SELECT reconciled_at,ledger_version FROM exchange_connections WHERE id=$1 AND tenant_id=$2",
+      "SELECT reconciled_at,ledger_version,inventory_started_at FROM exchange_connections WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
       [connectionId, tid],
     )
   ).rows[0];
@@ -250,6 +251,22 @@ export async function reconcile(
       ),
     ),
   ]);
+  const hasFills = !!(
+    await db.query(
+      "SELECT 1 FROM executions e JOIN orders o ON o.id=e.order_id AND o.tenant_id=e.tenant_id JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE b.connection_id=$1 AND e.tenant_id=$2 LIMIT 1",
+      [connectionId, tid],
+    )
+  ).rowCount;
+  const pristine =
+    !hasFills &&
+    ours.every(
+      (order) =>
+        order.state === "INTERNAL_CREATED" &&
+        !order.exchange_id &&
+        !order.submitted_at,
+    );
+  const cutoff =
+    connection.inventory_started_at?.getTime() ?? (pristine ? now : null);
   const byClient = new Map(ours.map((o) => [o.client_id, o]));
   const byExchange = new Map(
     ours.filter((o) => o.exchange_id).map((o) => [o.exchange_id, o]),
@@ -282,7 +299,20 @@ export async function reconcile(
   )) {
     const order =
       byClient.get(fill.orderLinkId) ?? byExchange.get(fill.orderId);
-    if (!order) throw Error("UNEXPECTED_EXCHANGE_EXECUTION");
+    if (!order) {
+      // Only pre-enrollment history with a verified timestamp can be outside the bot ledger.
+      const time = Number(fill.execTime);
+      if (
+        cutoff !== null &&
+        fill.execTime !== null &&
+        fill.execTime !== "" &&
+        Number.isSafeInteger(time) &&
+        time > 0 &&
+        time < cutoff
+      )
+        continue;
+      throw Error("UNEXPECTED_EXCHANGE_EXECUTION");
+    }
     if (
       (fill.orderLinkId && fill.orderLinkId !== order.client_id) ||
       (fill.orderId &&
@@ -355,6 +385,23 @@ export async function reconcile(
       state,
       { appliedQuantity: applied.toFixed() },
     );
+  }
+  if (ready) {
+    const balances = await adapter.getBalances();
+    for (const item of await managedAssets(db, tid, connectionId))
+      await checkInventory(
+        db,
+        tid,
+        connectionId,
+        item.asset,
+        assetTotal(balances, item.asset),
+        pristine,
+      );
+    if (!connection.inventory_started_at)
+      await db.query(
+        "UPDATE exchange_connections SET inventory_started_at=$1 WHERE tenant_id=$2 AND id=$3 AND inventory_started_at IS NULL",
+        [new Date(cutoff ?? now), tid, connectionId],
+      );
   }
   if (ready)
     await db.query(
