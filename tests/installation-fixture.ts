@@ -22,6 +22,22 @@ const token = randomBytes(32).toString("hex"),
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 try {
   validateMailConfiguration({ NODE_ENV: "production", MAIL_MODE: "disabled" });
+  assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
+  const migration = (
+    await admin.query(
+      "SELECT name,checksum FROM schema_migrations ORDER BY name DESC LIMIT 1",
+    )
+  ).rows[0];
+  await admin.query(
+    "UPDATE schema_migrations SET checksum='incomplete' WHERE name=$1",
+    [migration.name],
+  );
+  assert.equal((await app.inject({ url: "/api/health" })).statusCode, 503);
+  await admin.query("UPDATE schema_migrations SET checksum=$1 WHERE name=$2", [
+    migration.checksum,
+    migration.name,
+  ]);
+  assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
   let calls = 0;
   await assert.rejects(
     deliverAccountLink(

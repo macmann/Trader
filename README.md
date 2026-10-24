@@ -58,7 +58,7 @@ Phases 4–5 add organization roles, plan quotas and a signed billing gateway, O
 
 Run `npm run testnet:preflight` for a read-only, sanitized readiness report. It never submits orders and cannot certify external acceptance. See [Testnet acceptance and reliability](docs/testnet-acceptance.md).
 
-For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/compose.coolify.yaml`. PostgreSQL, internal database credentials, migrations and health checks are included. Trading stays disabled.
+For a hosted deployment, use [the Coolify guide](docs/coolify.md) and `/docker-compose.yaml`. PostgreSQL, internal database credentials, migrations and health checks are included. Trading stays disabled.
 
 ## Coolify: only two required variables
 
@@ -67,7 +67,7 @@ APP_ORIGIN=https://tradingbot.b-connect.site
 APP_ENCRYPTION_KEY=<permanent 64-character hex key>
 ```
 
-Generate the encryption key once with `openssl rand -hex 32` and back it up securely. Set the Compose location to `/compose.coolify.yaml`, assign your HTTPS domain to **web** port **3000**, and deploy. No database URL, database passwords or external API keys are required. Internal database passwords are generated into persistent Docker secret volumes; PostgreSQL has its own persistent data volume and no published port.
+Generate the encryption key once with `openssl rand -hex 32` and back it up securely. Set the Compose location to `/docker-compose.yaml`, assign your HTTPS domain to **web** port **3000**, and deploy. No database URL, database passwords or external API keys are required. Internal database passwords are generated into persistent Docker secret volumes; PostgreSQL has its own persistent data volume and no published port.
 
 After web and worker become healthy, open the **web** service terminal in Coolify and retrieve the one-time installation token:
 
@@ -80,3 +80,5 @@ Open your domain and use that token to create the initial platform administrator
 Open **Admin Settings** to configure Resend sender/key, AI provider/model/key and daily budget, news, Telegram token, or billing webhook secret. These values are encrypted in PostgreSQL using the external master key. Saved secrets are never returned to the browser; replacing or clearing one requires your account password. New requests and worker cycles use saved settings without redeployment. Public registration and email recovery are unavailable until Resend is configured. Verify your sending domain before enabling it.
 
 Back up **all three volumes** (`postgres-data`, `admin-secrets`, `app-secrets`) and `APP_ENCRYPTION_KEY`; never delete volumes on redeployment. Existing installations using an external database need an intentional database restore/migration before switching to the bundled deployment. This change does not automatically transfer your old database. See [the full deployment, backup and recovery guide](docs/coolify.md).
+
+The default `docker-compose.yaml` starts `initialize`, `postgres`, `migrate`, `web` and `worker` automatically; `compose.coolify.yaml` is a compatibility mirror. PostgreSQL uses Docker DNS `postgres:5432`, not the development localhost URLs. Database and migration readiness are checked before API startup with bounded retries. `POSTGRES_DB`, `POSTGRES_USER` and `APP_DATABASE_USER` have safe identifier defaults and are optional; passwords remain automatically generated. No manual migration, Redis, separate database resource or custom network is required. See [startup sequence, variable defaults, verification and deployment limitations](docs/coolify.md#default-compose-file-and-startup-readiness).
