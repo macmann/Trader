@@ -23,9 +23,9 @@ export function AdminSettings({
     <section className="panel">
       <h2>Admin → Settings</h2>
       <p>
-        Installation-wide integrations. Saved secrets stay encrypted and are
-        never displayed. Changes apply to new requests and worker cycles;
-        in-flight requests may finish with their current settings.
+        Installation-wide settings. Saved secrets stay encrypted and are never
+        displayed. Changes apply to new requests and worker cycles; in-flight
+        requests may finish with their current settings.
       </p>
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
@@ -41,6 +41,7 @@ export function AdminSettings({
             setNotice("");
             const settings: Record<string, string> = {};
             for (const name of [
+              "TRADING_EXECUTION_ENABLED",
               "MAIL_MODE",
               "MAIL_FROM",
               "AI_PROVIDER",
@@ -56,6 +57,8 @@ export function AdminSettings({
             try {
               const next = await request("/admin/settings", "PUT", {
                 password: data.get("password"),
+                acknowledgeTestnetExecution:
+                  data.get("acknowledgeTestnetExecution") === "on",
                 settings,
               });
               form.reset();
@@ -70,6 +73,28 @@ export function AdminSettings({
             }
           }}
         >
+          <label>
+            Testnet order execution
+            <select
+              name="TRADING_EXECUTION_ENABLED"
+              defaultValue={value.TRADING_EXECUTION_ENABLED}
+            >
+              <option value="false">Off (default)</option>
+              <option value="true">On — Testnet only</option>
+            </select>
+          </label>
+          <p>
+            Enabling permits Testnet orders after bot and risk checks; it does
+            not start stopped bots or enable Live trading. Disabling blocks new
+            submissions, including software exits; it does not close positions.
+            Cancellation and reconciliation continue. Orders already sent may
+            still fill.
+          </p>
+          <label>
+            <input type="checkbox" name="acknowledgeTestnetExecution" />I
+            acknowledge that enabling Testnet execution permits automated
+            simulated orders. Check this when switching from Off to On.
+          </label>
           <label>
             Email delivery
             <select name="MAIL_MODE" defaultValue={value.MAIL_MODE}>

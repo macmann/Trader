@@ -6,6 +6,7 @@ import { pool } from "../apps/api/src/db.ts";
 import {
   runtimeConfiguration,
   runtimeProvider,
+  testnetExecutionEnabled,
 } from "../apps/api/src/installation.ts";
 import {
   deliverAccountLink,
@@ -291,6 +292,58 @@ try {
   );
   for (const secret of Object.values(keys)) assert.ok(!audit.includes(secret));
   assert.ok(!audit.includes(password));
+  const legacyExecutionFlag = process.env.TRADING_EXECUTION_ENABLED;
+  process.env.TRADING_EXECUTION_ENABLED = "true";
+  try {
+    assert.equal(await testnetExecutionEnabled(), false);
+  } finally {
+    if (legacyExecutionFlag === undefined)
+      delete process.env.TRADING_EXECUTION_ENABLED;
+    else process.env.TRADING_EXECUTION_ENABLED = legacyExecutionFlag;
+  }
+  const control = (settings: unknown, acknowledgement = false) =>
+    app.inject({
+      url: "/api/admin/settings",
+      method: "PUT",
+      headers,
+      remoteAddress: "192.0.2.55",
+      payload: {
+        password,
+        settings,
+        acknowledgeTestnetExecution: acknowledgement,
+      },
+    });
+  assert.equal(
+    (await control({ TRADING_EXECUTION_ENABLED: "true" })).statusCode,
+    400,
+  );
+  assert.equal(await testnetExecutionEnabled(), false);
+  assert.equal(
+    (await control({ LIVE_TRADING_PLATFORM_ENABLED: "true" }, true)).statusCode,
+    400,
+  );
+  const enabled = await control({ TRADING_EXECUTION_ENABLED: "true" }, true);
+  assert.equal(enabled.statusCode, 200, enabled.body);
+  assert.equal(enabled.json().TRADING_EXECUTION_ENABLED, "true");
+  assert.equal(enabled.json().liveTradingEnabled, false);
+  assert.equal(await testnetExecutionEnabled(admin), true);
+  assert.equal(
+    (await request("/trading/options")).json().executionEnabled,
+    true,
+  );
+  assert.equal((await request("/ai/status")).json().executionEnabled, true);
+  assert.equal(
+    (await control({ TRADING_EXECUTION_ENABLED: "false" })).statusCode,
+    200,
+  );
+  assert.equal(await testnetExecutionEnabled(admin), false);
+  const changed = await admin.query(
+    "SELECT data FROM audit_logs WHERE action='TESTNET_EXECUTION_CHANGED' ORDER BY id",
+  );
+  assert.deepEqual(
+    changed.rows.map((row) => row.data.enabled),
+    [true, false],
+  );
   console.log(
     "PASS: token-gated setup, concurrent claim, disabled signup, platform authorization, CSRF, password confirmation, encrypted/redacted settings, dynamic providers and key removal",
   );

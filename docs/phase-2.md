@@ -22,7 +22,7 @@ AI_API_KEY=<platform-owned credential entered securely>
 AI_MAX_CALLS_PER_DAY=100
 NEWS_ENABLED=false
 LIVE_TRADING_PLATFORM_ENABLED=false
-TRADING_EXECUTION_ENABLED=false
+# Testnet execution is configured in Admin Settings (default Off).
 ```
 
 Alternatively set `AI_PROVIDER=anthropic`, `gemini` or `deepseek` and use its matching model and credential. Restart the API and worker after configuration changes. npm runtime commands enable Node 24’s `--use-env-proxy` so native fetch uses the cloud’s existing HTTPS proxy while retaining TLS verification. The model must support the adapter's structured-output request; unsupported models produce explicit failures. These adapters were verified with HTTP fixtures; actual provider/model compatibility requires an authenticated smoke test.

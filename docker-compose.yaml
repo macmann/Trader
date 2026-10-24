@@ -11,7 +11,6 @@ x-runtime-environment: &runtime-environment
   <<: *database-environment
   NODE_ENV: production
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY to a permanent 64-character hex key}
-  TRADING_EXECUTION_ENABLED: "false"
   LIVE_TRADING_PLATFORM_ENABLED: "false"
 services:
   initialize:

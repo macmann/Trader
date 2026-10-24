@@ -17,7 +17,7 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
       model: env.AI_MODEL ?? null,
       ready: configuredProvider(env) !== null,
       newsEnabled: env.NEWS_ENABLED === "true",
-      executionEnabled: process.env.TRADING_EXECUTION_ENABLED === "true",
+      executionEnabled: env.TRADING_EXECUTION_ENABLED === "true",
       liveEnabled: false,
     };
   });

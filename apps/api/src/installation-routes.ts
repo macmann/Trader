@@ -61,9 +61,10 @@ export function registerInstallationRoutes(app: FastifyInstance) {
     async (req, reply) => {
       if (!(await isOperator(req.identity!.userId)))
         return reply.code(403).send({ error: "PLATFORM_ADMIN_REQUIRED" });
-      const { password, settings } = z
+      const { password, settings, acknowledgeTestnetExecution } = z
         .strictObject({
           password: z.string().max(128),
+          acknowledgeTestnetExecution: z.boolean().optional(),
           settings: settingsSchema,
         })
         .parse(req.body);
@@ -76,8 +77,21 @@ export function registerInstallationRoutes(app: FastifyInstance) {
         return reply.code(401).send({ error: "INVALID_CREDENTIALS" });
       return tenant(req.identity!.tenantId, async (db) => {
         await db.query("SELECT pg_advisory_xact_lock(72723252)");
-        const next = { ...(await savedSettings(db)), ...settings };
-        const effective = { ...process.env, ...next };
+        const previous = await savedSettings(db);
+        const next = { ...previous, ...settings };
+        if (
+          next.TRADING_EXECUTION_ENABLED === "true" &&
+          previous.TRADING_EXECUTION_ENABLED !== "true" &&
+          acknowledgeTestnetExecution !== true
+        )
+          return reply
+            .code(400)
+            .send({ error: "TESTNET_EXECUTION_ACKNOWLEDGEMENT_REQUIRED" });
+        const effective = {
+          ...process.env,
+          ...next,
+          TRADING_EXECUTION_ENABLED: next.TRADING_EXECUTION_ENABLED ?? "false",
+        };
         try {
           validateMailConfiguration(effective);
           if (
@@ -99,6 +113,15 @@ export function registerInstallationRoutes(app: FastifyInstance) {
           fields: Object.keys(settings),
           userId: req.identity!.userId,
         });
+        if (
+          previous.TRADING_EXECUTION_ENABLED !==
+            next.TRADING_EXECUTION_ENABLED &&
+          settings.TRADING_EXECUTION_ENABLED !== undefined
+        )
+          await audit(db, req.identity!.tenantId, "TESTNET_EXECUTION_CHANGED", {
+            userId: req.identity!.userId,
+            enabled: next.TRADING_EXECUTION_ENABLED === "true",
+          });
         return publicSettings(effective);
       });
     },
