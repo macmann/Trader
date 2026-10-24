@@ -270,7 +270,13 @@ export function TradingDesk({
                     <input
                       name={"base_" + name}
                       type="number"
-                      min="0.01"
+                      min={
+                        ["maxTrades", "maxConsecutiveLosses"].includes(
+                          String(name),
+                        )
+                          ? "1"
+                          : "0.01"
+                      }
                       step={
                         ["maxTrades", "maxConsecutiveLosses"].includes(
                           String(name),
