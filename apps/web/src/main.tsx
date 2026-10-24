@@ -1,3 +1,4 @@
+import { jsonRequestOptions } from "./http.ts";
 import { AdminSettings } from "./AdminSettings.tsx";
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
@@ -34,11 +35,7 @@ type Connection = {
 };
 let csrf = "";
 async function api(path: string, method = "GET", data?: unknown) {
-  const r = await fetch("/api" + path, {
-    method,
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-    body: data ? JSON.stringify(data) : undefined,
-  });
+  const r = await fetch("/api" + path, jsonRequestOptions(method, csrf, data));
   const value = await r.json();
   if (!r.ok) {
     if (
