@@ -743,3 +743,24 @@ test("disabling Testnet execution after the durable marker blocks the final orde
   assert.equal(f.broker.creates, 0);
   assert.equal((await rows(f)).orders[0].state, "Cancelled");
 });
+
+test("worker observations explain data readiness and protection without changing order accounting", async () => {
+  const f = await fixture();
+  const observations: import("../apps/worker/src/monitoring.ts").BotObservation[] =
+    [];
+  await tick(
+    f.tid,
+    f.bid,
+    {
+      adapter: f.broker,
+      privateReady: true,
+      marketReceivedAt: Date.now(),
+      executionEnabled: true,
+    },
+    (value) => observations.push(value),
+  );
+  assert.ok(observations.some((v) => v.stage === "RECONCILING"));
+  assert.ok(observations.some((v) => v.stage === "EVALUATING"));
+  assert.ok(observations.some((v) => v.reconciled === true));
+  assert.equal(f.broker.creates, 1);
+});

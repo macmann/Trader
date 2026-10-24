@@ -1,3 +1,8 @@
+import {
+  recordObservation,
+  failureObservation,
+  type BotObservation,
+} from "./monitoring.ts";
 import { bybitTestnetEndpoints } from "../../../packages/exchanges/src/index.ts";
 import {
   runtimeProvider,
@@ -247,6 +252,7 @@ export async function tick(
     afterIntent?: () => Promise<void>;
     afterSubmitting?: () => Promise<void>;
   },
+  observe?: (snapshot: BotObservation) => void,
 ) {
   const clock = override?.now ?? Date.now;
   await tenant(
@@ -335,8 +341,25 @@ export async function tick(
           [botId, tid],
         )
       ).rowCount;
-      if (!["STARTING", "RUNNING"].includes(row.status) && !hasOrders) return;
+      const observation: BotObservation = {
+        stage: "RECONCILING",
+        reasons: [],
+        privateReady: runtime.privateReady,
+        marketReceivedAt: runtime.marketReceivedAt,
+        executionEnabled: runtime.executionEnabled,
+      };
+      const report = (stage: string, reasons: string[] = []) => {
+        observation.stage = stage;
+        observation.reasons = reasons;
+        observe?.({ ...observation });
+      };
+      if (!["STARTING", "RUNNING"].includes(row.status) && !hasOrders) {
+        report(row.status, ["BOT_NOT_ACTIVE"]);
+        return;
+      }
+      report("RECONCILING");
       const ready = await reconcile(db, tid, row.connection_id, adapter);
+      observation.reconciled = ready;
       const controls = (
         await db.query(
           "SELECT execution_stopped FROM platform_controls WHERE id=true",
@@ -358,6 +381,7 @@ export async function tick(
         protectiveExit: false,
       });
       if (!ready) {
+        report("RISK_LOCKED", ["RECONCILIATION_REQUIRED"]);
         await db.query(
           "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
           [botId, tid],
@@ -365,6 +389,10 @@ export async function tick(
         return;
       }
       if (pending.length) {
+        report(
+          "MANAGING_OPEN_ORDERS",
+          runtime.executionEnabled ? [] : ["EXECUTION_DISABLED"],
+        );
         const internal = pending.find((o) => o.state === "INTERNAL_CREATED");
         if (internal) {
           await dispatchIntent(db, tid, internal.id, adapter, runtime);
@@ -390,6 +418,16 @@ export async function tick(
             ...botConfig.parse(row.config),
             advanced: advancedConfig.parse(row.advanced_config),
           });
+          observation.price = Number(quote?.lastPrice);
+          observation.priceAt = clock();
+          observation.protection = {
+            stopPrice: check.stopPrice,
+            takeProfitPrice: check.takeProfitPrice,
+            highWatermark: check.highWatermark,
+            exit: check.exit,
+            reason: check.reason,
+          };
+          observe?.({ ...observation });
           await db.query(
             "UPDATE positions SET high_watermark=$1 WHERE bot_id=$2 AND tenant_id=$3",
             [check.highWatermark, botId, tid],
@@ -406,8 +444,12 @@ export async function tick(
       if (
         !["STARTING", "RUNNING", "PAUSED"].includes(row.status) ||
         !runtime.privateReady
-      )
+      ) {
+        report(runtime.privateReady ? row.status : "WAITING_PRIVATE_STREAM", [
+          runtime.privateReady ? "BOT_NOT_ACTIVE" : "PRIVATE_STREAM_NOT_READY",
+        ]);
         return;
+      }
       if (row.status === "STARTING") {
         await db.query(
           "UPDATE bots SET status='RUNNING' WHERE id=$1 AND tenant_id=$2",
@@ -425,13 +467,21 @@ export async function tick(
         !Number.isFinite(price) ||
         price <= 0 ||
         now - runtime.marketReceivedAt > 45000
-      )
+      ) {
+        report("WAITING_MARKET_DATA", ["MARKET_DATA_STALE_OR_INVALID"]);
         return;
+      }
+      observation.price = price;
+      observation.priceAt = now;
+      report("EVALUATING");
       const candles = (await adapter.getCandles(row.symbol)).filter(
           (c) => c.time + 900000 <= now,
         ),
         last = candles.at(-1);
-      if (!last) return;
+      if (!last) {
+        report("WAITING_CANDLE", ["NO_CLOSED_CANDLE"]);
+        return;
+      }
       const positionQty = new Decimal(p.quantity),
         entry = positionQty.gt(0)
           ? new Decimal(p.cost).div(positionQty).toNumber()
@@ -452,6 +502,14 @@ export async function tick(
         takeProfitPct: config.takeProfitPct,
         advanced,
       });
+      observation.protection = {
+        stopPrice: protectionState.stopPrice,
+        takeProfitPrice: protectionState.takeProfitPrice,
+        highWatermark: protectionState.highWatermark,
+        exit: protectionState.exit,
+        reason: protectionState.reason,
+      };
+      observe?.({ ...observation });
       await db.query(
         "UPDATE positions SET high_watermark=$1 WHERE bot_id=$2 AND tenant_id=$3",
         [protectionState.highWatermark, botId, tid],
@@ -474,6 +532,7 @@ export async function tick(
         !priceDriven &&
         String(row.last_candle) === String(last.time)
       ) {
+        report("WAITING_CANDLE", ["NEXT_CLOSED_CANDLE"]);
         if (mode !== "OFF" && row.last_ai_news !== newsRevision) {
           const refreshed = await analyzeBot(
             db,
@@ -629,6 +688,7 @@ export async function tick(
         (mode === "FILTER" || signal.direction === "NONE")
       )
         return;
+      report("DECISION", rejection);
       const entryApproval = entryDecision(
         mode,
         signal.direction,
@@ -716,6 +776,7 @@ export async function tick(
         );
         return;
       }
+      report("ORDER_INTENT", exit ? ["EXIT_SIGNAL"] : ["ENTRY_SIGNAL"]);
       const orderId = randomUUID(),
         clientId =
           row.provider === "OKX" ? orderId.replaceAll("-", "") : orderId;
@@ -834,9 +895,16 @@ export async function startWorker() {
         );
         for (const b of bots) {
           active.add(b.connection_id);
+          let observation: BotObservation = {
+            stage: "WAITING",
+            reasons: ["NO_WORKER_CHECK_RESULT"],
+          };
           try {
-            await tick(w.id, b.id);
+            await tick(w.id, b.id, undefined, (snapshot) => {
+              observation = snapshot;
+            });
           } catch (e) {
+            observation = failureObservation(e);
             console.error(
               JSON.stringify({
                 event: "BOT_CHECK_FAILED",
@@ -849,8 +917,14 @@ export async function startWorker() {
                 "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
                 [b.id, w.id],
               );
-              await audit(db, w.id, "RECONCILIATION_FAILED", { botId: b.id });
+              await audit(db, w.id, "RECONCILIATION_FAILED", {
+                botId: b.id,
+                reason: observation.reasons[0],
+                exchangeCode: observation.exchangeCode,
+              });
             });
+          } finally {
+            await recordObservation(w.id, b.id, observation);
           }
         }
       }

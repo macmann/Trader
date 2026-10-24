@@ -1,3 +1,5 @@
+import { registerBotMonitorRoutes } from "./bot-monitor-routes.ts";
+import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
 import { schemaReady } from "../../../scripts/database-ready.ts";
 import { registerInstallationRoutes } from "./installation-routes.ts";
 import { runtimeConfiguration, isOperator } from "./installation.ts";
@@ -662,11 +664,30 @@ app.post("/api/bots/:id/:action", async (req, reply) => {
     if (!b.rowCount) return reply.code(404).send({ error: "NOT_FOUND" });
     if (b.rows[0].status === "ARCHIVED")
       return reply.code(409).send({ error: "BOT_ARCHIVED" });
+    if (
+      (p.action === "start" &&
+        ["STARTING", "RUNNING"].includes(b.rows[0].status)) ||
+      (p.action === "pause" && b.rows[0].status === "PAUSED") ||
+      (p.action === "stop" && b.rows[0].status === "STOPPED")
+    )
+      return { status: b.rows[0].status, unchanged: true };
+    if (!botActionEnabled(b.rows[0].status, p.action))
+      return reply.code(409).send({ error: "INVALID_BOT_STATE_TRANSITION" });
     if (p.action === "start" && b.rows[0].connection_status !== "CONNECTED")
       return reply.code(409).send({ error: "EXCHANGE_NOT_CONNECTED" });
     const status = { start: "STARTING", pause: "PAUSED", stop: "STOPPED" }[
       p.action
     ];
+    if (p.action === "start")
+      await db.query(
+        "INSERT INTO bot_runs(id,tenant_id,bot_id) VALUES($1,$2,$3) ON CONFLICT(bot_id) WHERE stopped_at IS NULL DO NOTHING",
+        [randomUUID(), tid, p.id],
+      );
+    if (p.action === "stop")
+      await db.query(
+        "UPDATE bot_runs SET stopped_at=now(),stop_reason='STOP' WHERE tenant_id=$1 AND bot_id=$2 AND stopped_at IS NULL",
+        [tid, p.id],
+      );
     await db.query("UPDATE bots SET status=$1 WHERE id=$2 AND tenant_id=$3", [
       status,
       p.id,
@@ -681,6 +702,10 @@ app.post("/api/stop-all", async (req) =>
     await lockPortfolio(db, req.identity!.tenantId);
     await db.query(
       "UPDATE bots SET status='STOPPED' WHERE tenant_id=$1 AND status<>'ARCHIVED'",
+      [req.identity!.tenantId],
+    );
+    await db.query(
+      "UPDATE bot_runs SET stopped_at=now(),stop_reason='STOP_ALL' WHERE tenant_id=$1 AND stopped_at IS NULL",
       [req.identity!.tenantId],
     );
     await audit(db, req.identity!.tenantId, "ALL_BOTS_STOPPED");
@@ -700,6 +725,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
         ).rows,
     ),
   );
+registerBotMonitorRoutes(app);
 registerInstallationRoutes(app);
 registerPlatformRoutes(app);
 registerIntelligenceRoutes(app);
