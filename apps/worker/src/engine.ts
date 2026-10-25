@@ -1,3 +1,4 @@
+import { marketDiagnostics } from "../../../packages/trading/src/diagnostics.ts";
 import { aiStrategy } from "./ai-strategy.ts";
 import {
   duration,
@@ -492,6 +493,7 @@ export async function tick(
         report("WAITING_CANDLE", ["NO_CLOSED_CANDLE"]);
         return;
       }
+      observation.candleTime = last.time;
       const positionQty = new Decimal(p.quantity),
         entry = positionQty.gt(0)
           ? new Decimal(p.cost).div(positionQty).toNumber()
@@ -770,9 +772,19 @@ export async function tick(
             ...signal,
             symbol: row.symbol,
             protection: protectionState,
+            diagnostics: marketDiagnostics(candles, row.strategy_version),
           }),
           JSON.stringify({
             approved: exit || buy,
+            outcome: exit
+              ? "EXIT_APPROVED"
+              : buy
+                ? "ENTRY_APPROVED"
+                : signal.direction === "EXIT"
+                  ? "NO_POSITION_TO_EXIT"
+                  : signal.direction === "NONE"
+                    ? "NO_ENTRY_SIGNAL"
+                    : "ENTRY_REJECTED",
             reasons: exit ? [] : entryApproval.reasons,
             aiMode: row.strategy_version === "ai-v1.0" ? "STRATEGY" : mode,
             aiReason:

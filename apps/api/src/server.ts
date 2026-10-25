@@ -1,3 +1,4 @@
+import { registerBotDiagnostics } from "./bot-diagnostics.ts";
 import {
   registerStrategyRoutes,
   validateStrategySelection,
@@ -751,6 +752,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
     ),
   );
 registerBotMonitorRoutes(app);
+registerBotDiagnostics(app);
 registerInstallationRoutes(app);
 registerPlatformRoutes(app);
 registerIntelligenceRoutes(app);

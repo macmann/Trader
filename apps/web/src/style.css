@@ -1191,3 +1191,68 @@ label small {
 .fills-history th:nth-child(n + 2):nth-child(-n + 5) {
   text-align: right;
 }
+.bot-diagnostics {
+  padding: 20px 0;
+}
+.bot-diagnostics .monitor-alert li {
+  margin: 10px 0;
+  line-height: 1.6;
+}
+.diagnostic-json {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #2a3c4e;
+  border-radius: 10px;
+  background: #0e1721;
+}
+.diagnostic-json summary {
+  cursor: pointer;
+  color: #b8d6f1;
+  font-size: 13px;
+}
+.diagnostic-json pre {
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 500px;
+  overflow: auto;
+}
+@media print {
+  body {
+    background: white;
+    color: black;
+  }
+  .bot-diagnostics {
+    color: black;
+  }
+  .bot-diagnostics button,
+  .bot-diagnostics select {
+    display: none;
+  }
+  .diagnostic-json pre {
+    max-height: none;
+    overflow: visible;
+    color: black;
+  }
+  .diagnostic-json:not([open]) > *:not(summary) {
+    display: block;
+  }
+}
+@media print {
+  body:has(.bot-diagnostics) * {
+    visibility: hidden;
+  }
+  body:has(.bot-diagnostics) .bot-diagnostics,
+  body:has(.bot-diagnostics) .bot-diagnostics * {
+    visibility: visible;
+  }
+  body:has(.bot-diagnostics) .bot-diagnostics {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0;
+    background: white;
+  }
+}

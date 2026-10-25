@@ -84,21 +84,48 @@ export function evaluateRules(
 ) {
   const list = positioned ? rules.exit : rules.entry;
   try {
+    const checks: {
+      rule: (typeof list)[number];
+      left: number;
+      right: number;
+      passed: boolean;
+      previousLeft?: number;
+      previousRight?: number;
+    }[] = [];
     const matched = list.map((rule) => {
       const value = (slice: Candle[], ref: typeof rule.right) =>
         typeof ref === "number" ? ref : indicatorValue(slice, ref);
       const left = indicatorValue(candles, rule.left),
         right = value(candles, rule.right);
-      if (rule.operator === "GT") return left > right;
-      if (rule.operator === "LT") return left < right;
+      const record = (
+        passed: boolean,
+        previous?: { left: number; right: number },
+      ) => {
+        checks.push({
+          rule,
+          left,
+          right,
+          passed,
+          ...(previous
+            ? { previousLeft: previous.left, previousRight: previous.right }
+            : {}),
+        });
+        return passed;
+      };
+      if (rule.operator === "GT") return record(left > right);
+      if (rule.operator === "LT") return record(left < right);
       const previous = candles.slice(0, -1),
         a = indicatorValue(previous, rule.left),
         b = value(previous, rule.right);
-      return rule.operator === "CROSS_ABOVE"
-        ? a <= b && left > right
-        : a >= b && left < right;
+      return record(
+        rule.operator === "CROSS_ABOVE"
+          ? a <= b && left > right
+          : a >= b && left < right,
+        { left: a, right: b },
+      );
     });
     return {
+      ruleChecks: checks,
       direction: matched.every(Boolean)
         ? ((positioned ? "EXIT" : "LONG") as "LONG" | "EXIT")
         : ("NONE" as const),
