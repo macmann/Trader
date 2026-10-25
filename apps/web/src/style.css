@@ -1310,3 +1310,32 @@ label small {
     flex-direction: column;
   }
 }
+.deleted-bots-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #a9bbce;
+  margin: 16px 0;
+}
+.deleted-bots-toggle input {
+  width: auto;
+}
+.bot-delete-button {
+  margin-top: 14px;
+  background: transparent;
+  border-color: #62404a;
+  color: #f2a9b2;
+}
+.bot-delete-confirm {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #69434b;
+  border-radius: 9px;
+  background: #2b2028;
+}
+.bot-delete-confirm p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #c9b5bd;
+}

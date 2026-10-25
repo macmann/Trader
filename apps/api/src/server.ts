@@ -1,3 +1,4 @@
+import { registerBotDeleteRoutes } from "./bot-delete-routes.ts";
 import { registerAdminUserRoutes } from "./admin-users-routes.ts";
 import { registerBotDiagnostics } from "./bot-diagnostics.ts";
 import {
@@ -563,18 +564,22 @@ app.delete("/api/connections/:id", async (req, reply) => {
     return { ok: true };
   });
 });
-app.get("/api/bots", async (req) =>
-  tenant(
+app.get("/api/bots", async (req) => {
+  const includeDeleted =
+    z
+      .object({ includeDeleted: z.enum(["true", "false"]).default("false") })
+      .parse(req.query).includeDeleted === "true";
+  return tenant(
     req.identity!.tenantId,
     async (db) =>
       (
         await db.query(
-          "SELECT b.*,c.environment,c.status AS connection_status,p.quantity,p.cost,p.realized_pnl,p.fees,p.position_direction,p.funding_total FROM bots b JOIN exchange_connections c ON c.id=b.connection_id LEFT JOIN positions p ON p.bot_id=b.id WHERE b.tenant_id=$1 ORDER BY b.created_at DESC",
-          [req.identity!.tenantId],
+          "SELECT b.*,c.environment,c.status AS connection_status,p.quantity,p.cost,p.realized_pnl,p.fees,p.position_direction,p.funding_total FROM bots b JOIN exchange_connections c ON c.id=b.connection_id LEFT JOIN positions p ON p.bot_id=b.id WHERE b.tenant_id=$1 AND ($2::boolean OR b.status<>'ARCHIVED') ORDER BY b.created_at DESC",
+          [req.identity!.tenantId, includeDeleted],
         )
       ).rows,
-  ),
-);
+  );
+});
 app.post("/api/bots", async (req, reply) => {
   const v = z
       .strictObject({
@@ -653,7 +658,7 @@ app.post("/api/bots", async (req, reply) => {
       v.marketType === "LINEAR" &&
       (
         await db.query(
-          "SELECT 1 FROM bots WHERE tenant_id=$1 AND connection_id=$2 AND symbol=$3 AND market_type='LINEAR'",
+          "SELECT 1 FROM bots WHERE tenant_id=$1 AND connection_id=$2 AND symbol=$3 AND market_type='LINEAR' AND status<>'ARCHIVED'",
           [tid, v.connectionId, v.symbol],
         )
       ).rowCount
@@ -786,6 +791,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
     ),
   );
 registerBotMonitorRoutes(app);
+registerBotDeleteRoutes(app);
 registerBotDiagnostics(app);
 registerInstallationRoutes(app);
 registerAdminUserRoutes(app);

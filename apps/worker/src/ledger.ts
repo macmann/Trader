@@ -247,7 +247,7 @@ export async function reconcile(
     marketType === "LINEAR"
       ? (
           await db.query(
-            "SELECT futures_reconciled_at,futures_started_at FROM bots WHERE tenant_id=$1 AND connection_id=$2 AND symbol=$3 AND market_type='LINEAR'",
+            "SELECT current.futures_reconciled_at,(SELECT min(history.futures_started_at) FROM bots history WHERE history.tenant_id=current.tenant_id AND history.connection_id=current.connection_id AND history.symbol=current.symbol AND history.market_type='LINEAR') AS futures_started_at FROM bots current WHERE current.tenant_id=$1 AND current.connection_id=$2 AND current.symbol=$3 AND current.market_type='LINEAR' AND current.status<>'ARCHIVED'",
             [tid, connectionId, symbol],
           )
         ).rows[0]
@@ -439,7 +439,7 @@ export async function reconcile(
   }
   if (ready && marketType === "LINEAR")
     await db.query(
-      "UPDATE bots SET futures_reconciled_at=$1,futures_started_at=COALESCE(futures_started_at,$1) WHERE tenant_id=$2 AND connection_id=$3 AND symbol=$4 AND market_type='LINEAR'",
+      "UPDATE bots SET futures_reconciled_at=$1,futures_started_at=COALESCE(futures_started_at,$1) WHERE tenant_id=$2 AND connection_id=$3 AND symbol=$4 AND market_type='LINEAR' AND status<>'ARCHIVED'",
       [new Date(now), tid, connectionId, symbol],
     );
   if (ready && marketType === "SPOT")

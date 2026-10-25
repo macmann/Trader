@@ -1018,7 +1018,7 @@ export async function startWorker() {
           async (db) =>
             (
               await db.query(
-                "SELECT b.id,b.connection_id FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.tenant_id=$1 AND c.status='CONNECTED'",
+                "SELECT b.id,b.connection_id FROM bots b JOIN exchange_connections c ON c.id=b.connection_id WHERE b.tenant_id=$1 AND c.status='CONNECTED' AND b.status<>'ARCHIVED'",
                 [w.id],
               )
             ).rows,

@@ -55,3 +55,13 @@ The report includes configuration, current worker and inventory state, selected 
 Migration 011 starts worker state-change history and 10-minute heartbeats. Worker history is bounded to 14 days and 10,000 records per bot; identical polls are deduplicated. Structured `BOT_DIAGNOSTIC` transition messages also appear in worker container logs. Candle evaluations now store calculated indicators; Trend v1 includes crossover, RSI, volume and price-structure checks, and custom rules include actual comparison values and crossover history. Old records cannot be backfilled with information that was never recorded.
 
 Reports include the latest 500 records per category in the selected period, with total counts and an explicit truncation flag. Current positions/snapshots represent current state, not a reconstruction at the start of the period. Orders are selected by update time; fills by execution time. Diagnostic records do not replace the financial ledger or establish that an order was filled.
+
+### Delete a bot
+
+Use **Bots → Delete bot → Confirm delete**. Deletion stops and archives the bot, releases its configured allocation and subscription bot slot, and removes it from the default bot list. No exchange trade or liquidation is performed by Delete. A never-traded flat bot can be deleted immediately, including while running or with a disconnected exchange.
+
+Deletion is blocked while a tracked position/cost or unresolved order remains. Bots with submitted orders need a completed reconciliation covering their last external order state. An already settled historical bot does not need to reconnect just because that reconciliation is old. Resolve real order/position uncertainty before deleting; deletion does not reset the ledger.
+
+Choose **Show deleted bots · retained history** to inspect deleted bots and open their monitor, fills and diagnostic exports. Deleted bots cannot restart or change AI settings. Historical P&L remains part of workspace history. The default bot-list API excludes deleted records; `GET /api/bots?includeDeleted=true` includes retained records. Changes are tenant-scoped, CSRF/role protected, idempotent and audited with the acting user.
+
+Migration 015 timestamps deletion and releases a futures contract's active ownership slot. A new futures bot can use that contract once the old bot is flat and settled; old fill identities and enrollment history remain available to reconciliation without reactivating the deleted bot.

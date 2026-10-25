@@ -60,6 +60,14 @@ async function api(path: string, method = "GET", data?: unknown) {
         "Your platform password was not accepted. Exchange credentials were not checked.",
       );
     const guidance: Record<string, string> = {
+      CLOSE_POSITION_BEFORE_DELETING_BOT:
+        "This bot has an open position. Close it before deleting; Delete does not close positions.",
+      RESOLVE_ORDERS_BEFORE_DELETING_BOT:
+        "This bot has unresolved orders. Stop it and let the worker reconcile/cancel those orders before deleting.",
+      RECONCILE_BEFORE_DELETING_BOT:
+        "The bot has order activity that has not been confirmed by reconciliation. Check its worker/order history and resolve that activity before deleting.",
+      BOT_POSITION_STATE_MISSING:
+        "The bot’s position state needs reconciliation before it can be deleted.",
       API_KEY_OR_ENVIRONMENT_MISMATCH:
         "The key does not match the selected endpoint. Global Testnet (.com), EU Testnet (.eu), Demo and Live use separate credentials. Select the same site where you created the key.",
       INVALID_SIGNATURE:
@@ -111,18 +119,27 @@ function App() {
     [busy, setBusy] = useState(false),
     [dialog, setDialog] = useState(""),
     [connectionProvider, setConnectionProvider] = useState("BYBIT"),
+    [showDeleted, setShowDeleted] = useState(false),
+    [deleteBotId, setDeleteBotId] = useState<string | null>(null),
     [selectedBotId, setSelectedBotId] = useState<string | null>(null),
     [pendingActions, setPendingActions] = useState<Record<string, string>>({});
   const actionLocks = useRef(new Set<string>()),
     refreshEpoch = useRef(0);
-  useEffect(() => setSelectedBotId(null), [user?.tenantId]);
+  useEffect(() => {
+    setSelectedBotId(null);
+    setDeleteBotId(null);
+    setShowDeleted(false);
+  }, [user?.tenantId]);
   async function refresh() {
     const epoch = ++refreshEpoch.current;
     const me = await api("/auth/me");
     if (epoch !== refreshEpoch.current) return;
     csrf = me.csrf;
     if (me.verified) {
-      const [b, c] = await Promise.all([api("/bots"), api("/connections")]);
+      const [b, c] = await Promise.all([
+        api("/bots?includeDeleted=true"),
+        api("/connections"),
+      ]);
       if (epoch !== refreshEpoch.current) return;
       setBots(b);
       setConnections(c);
@@ -138,13 +155,23 @@ function App() {
     ++refreshEpoch.current;
     setPendingActions((old) => ({ ...old, [id]: action }));
     try {
-      const result = await api(`/bots/${id}/${action}`, "POST");
+      const result = await api(
+        action === "delete" ? `/bots/${id}` : `/bots/${id}/${action}`,
+        action === "delete" ? "DELETE" : "POST",
+      );
       ++refreshEpoch.current;
       setBots((old) =>
         old.map((bot) =>
           bot.id === id ? { ...bot, status: result.status } : bot,
         ),
       );
+      if (action === "delete") {
+        setDeleteBotId(null);
+        setSelectedBotId((current) => (current === id ? null : current));
+        setNotice(
+          "Bot deleted. History is retained under Show deleted bots; its allocation and plan slot are released.",
+        );
+      }
       if (action === "start") {
         setPage("Bots");
         setSelectedBotId(id);
@@ -395,8 +422,10 @@ function App() {
         </p>
       </main>
     );
+  const currentBots = bots.filter((b) => b.status !== "ARCHIVED"),
+    visibleBots = showDeleted ? bots : currentBots;
   const active = bots.filter((b) => b.status === "RUNNING").length,
-    allocation = bots.reduce((n, b) => n + b.config.capital, 0),
+    allocation = currentBots.reduce((n, b) => n + b.config.capital, 0),
     pnl = bots.reduce(
       (n, b) =>
         n +
@@ -530,7 +559,7 @@ function App() {
                       [
                         "Active bots",
                         String(active),
-                        `${bots.length} bots in your workspace`,
+                        `${currentBots.length} bots in your workspace`,
                       ],
                       [
                         "Exchange connections",
@@ -553,7 +582,8 @@ function App() {
                   </div>
                   <div className="section-heading">
                     <h2>
-                      Your bots <span className="count">{bots.length}</span>
+                      Your bots{" "}
+                      <span className="count">{currentBots.length}</span>
                     </h2>
                     <button
                       className="primary"
@@ -562,6 +592,14 @@ function App() {
                       + Create bot
                     </button>
                   </div>
+                  <label className="deleted-bots-toggle">
+                    <input
+                      type="checkbox"
+                      checked={showDeleted}
+                      onChange={(e) => setShowDeleted(e.target.checked)}
+                    />
+                    Show deleted bots · retained history
+                  </label>
                   {selectedBotId && page === "Bots" && (
                     <BotMonitor
                       key={`${user.tenantId}:${selectedBotId}`}
@@ -577,7 +615,7 @@ function App() {
                       }
                     />
                   )}
-                  {!bots.length ? (
+                  {!visibleBots.length ? (
                     <section className="empty panel">
                       <div className="empty-icon">◇</div>
                       <h2>Your first strategy starts here.</h2>
@@ -602,7 +640,7 @@ function App() {
                     </section>
                   ) : (
                     <div className="bot-grid">
-                      {bots.map((b) => (
+                      {visibleBots.map((b) => (
                         <article className="panel bot-card" key={b.id}>
                           <div className="row">
                             <span className="coin">₿</span>
@@ -623,7 +661,9 @@ function App() {
                               (b.status === "RUNNING" ? "running" : "")
                             }
                           >
-                            {b.status.replaceAll("_", " ")}
+                            {b.status === "ARCHIVED"
+                              ? "DELETED · HISTORY RETAINED"
+                              : b.status.replaceAll("_", " ")}
                           </span>
                           <div className="bot-stats">
                             <div>
@@ -698,6 +738,62 @@ function App() {
                               </button>
                             ))}
                           </div>
+                          {b.status !== "ARCHIVED" &&
+                            (deleteBotId === b.id ? (
+                              <div
+                                className="bot-delete-confirm"
+                                role="group"
+                                aria-label={`Confirm deletion of ${b.name}`}
+                              >
+                                <strong>Delete {b.name}?</strong>
+                                <p>
+                                  The bot will stop and leave the active
+                                  workspace. Trade history and diagnostic
+                                  records stay available.
+                                </p>
+                                {Number(b.quantity) > 0 && (
+                                  <p role="alert">
+                                    This bot has an open position. Close it
+                                    before deleting. Delete does not close
+                                    positions.
+                                  </p>
+                                )}
+                                <div className="actions">
+                                  <button
+                                    disabled={
+                                      busy ||
+                                      !!pendingActions[b.id] ||
+                                      Number(b.quantity) > 0
+                                    }
+                                    onClick={() =>
+                                      void run(() => botAction(b.id, "delete"))
+                                    }
+                                  >
+                                    {pendingActions[b.id] === "delete"
+                                      ? "Deleting…"
+                                      : "Confirm delete"}
+                                  </button>
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => setDeleteBotId(null)}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                className="bot-delete-button"
+                                disabled={
+                                  busy ||
+                                  user.role === "VIEWER" ||
+                                  !!pendingActions[b.id]
+                                }
+                                onClick={() => setDeleteBotId(b.id)}
+                              >
+                                Delete bot
+                              </button>
+                            ))}
                         </article>
                       ))}
                     </div>
@@ -731,17 +827,21 @@ function App() {
                   user={user}
                   refresh={refresh}
                   connections={connections}
-                  bots={bots}
+                  bots={currentBots}
                 />
               )}
               {page === "Strategies" && <StrategyCreator request={api} />}
               {page === "Portfolio" && (
-                <TradingDesk bots={bots} request={api} refreshBots={refresh} />
+                <TradingDesk
+                  bots={currentBots}
+                  request={api}
+                  refreshBots={refresh}
+                />
               )}
               {["AI Analysis", "News"].includes(page) && (
                 <Intelligence
                   page={page}
-                  bots={bots}
+                  bots={currentBots}
                   request={api}
                   refreshBots={refresh}
                 />

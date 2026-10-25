@@ -70,6 +70,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
         )
       ).rows[0];
       if (!bot) return reply.code(404).send({ error: "NOT_FOUND" });
+      if (bot.status === "ARCHIVED")
+        return reply.code(409).send({ error: "BOT_ARCHIVED" });
       if (bot.strategy_version === "ai-v1.0" && mode !== "OFF")
         return reply
           .code(400)
@@ -102,6 +104,8 @@ export function registerIntelligenceRoutes(app: FastifyInstance) {
           )
         ).rows[0];
         if (!bot) return reply.code(404).send({ error: "NOT_FOUND" });
+        if (bot.status === "ARCHIVED")
+          return reply.code(409).send({ error: "BOT_ARCHIVED" });
         if (bot.ai_mode === "OFF")
           return reply
             .code(409)
