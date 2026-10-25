@@ -1073,3 +1073,77 @@ test("invalid AI fails closed while hard stop exits keep working without AI", as
   await tenant(f.tid, (db) => reconcile(db, f.tid, f.cid, f.broker));
   assert.equal(Number((await rows(f)).position.quantity), 0);
 });
+
+test("worker diagnostic history records changes, deduplicates polls and enforces tenant scope", async () => {
+  const { recordObservation } =
+    await import("../apps/worker/src/monitoring.ts");
+  const f = await fixture(),
+    other = await fixture();
+  const observation = {
+    stage: "WAITING_CANDLE",
+    reasons: ["NEXT_CLOSED_CANDLE"],
+    candleTime: Date.now() - 900000,
+    privateReady: true,
+    executionEnabled: true,
+  };
+  await recordObservation(f.tid, f.bid, observation);
+  await recordObservation(f.tid, f.bid, { ...observation, price: 100 });
+  let events = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query("SELECT * FROM bot_diagnostic_events WHERE bot_id=$1", [
+          f.bid,
+        ])
+      ).rows,
+  );
+  assert.equal(events.length, 1);
+  await recordObservation(f.tid, f.bid, {
+    ...observation,
+    stage: "CHECK_FAILED",
+    reasons: ["AI_TIMEOUT"],
+  });
+  events = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query(
+          "SELECT * FROM bot_diagnostic_events WHERE bot_id=$1 ORDER BY id",
+          [f.bid],
+        )
+      ).rows,
+  );
+  assert.equal(events.length, 2);
+  assert.equal(events[1].snapshot.reasons[0], "AI_TIMEOUT");
+  assert.equal(
+    await tenant(
+      other.tid,
+      async (db) =>
+        (
+          await db.query(
+            "SELECT 1 FROM bot_diagnostic_events WHERE bot_id=$1",
+            [f.bid],
+          )
+        ).rowCount,
+    ),
+    0,
+  );
+  await admin.query(
+    "UPDATE bot_diagnostic_events SET created_at=now()-interval '15 days' WHERE bot_id=$1",
+    [f.bid],
+  );
+  await recordObservation(f.tid, f.bid, observation);
+  assert.equal(
+    await tenant(
+      f.tid,
+      async (db) =>
+        (
+          await db.query(
+            "SELECT 1 FROM bot_diagnostic_events WHERE bot_id=$1",
+            [f.bid],
+          )
+        ).rowCount,
+    ),
+    1,
+  );
+});

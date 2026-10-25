@@ -94,3 +94,5 @@ Prefunded Testnet/Demo accounts are supported: first start checks automatically 
 ### Strategy creator and AI Strategy
 
 Use **Strategies** to save versioned RSI, EMA, MA, price and volume rules for entries/exits. When creating a bot—or configuring a stopped, flat bot in **Portfolio**—choose a saved custom version or **AI Strategy**, and select **15m, 30m or 1h** candles. AI Strategy offers model selection from the platform's configured provider and records Buy/Hold/Exit analysis on each completed candle. Configure the provider key and call budget in **Admin Settings**; no new environment variables are needed. All orders still pass the existing risk and execution controls. See the [setup and behavior guide](docs/strategy-creator.md).
+
+To investigate a bot that has not traded, open its monitor → **Diagnostics & export**. Download the readable report or JSON logs and share the file for review. Reports include strategy/risk/AI decisions, transactions and worker history, with credential redaction and explicit history limits. New indicator diagnostics and retained worker events begin after migration 011 is deployed. No new environment variables are required.

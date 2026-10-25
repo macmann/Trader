@@ -1090,4 +1090,60 @@ test("strategy creator versions are immutable, tenant scoped and configurable on
     payload: { timeframe: "15" },
   });
   assert.equal(exposed.statusCode, 409);
+  await tenant(a.tid, async (db) => {
+    await db.query(
+      "INSERT INTO signals(id,tenant_id,bot_id,candle_time,strategy_version,data,decision) SELECT gen_random_uuid(),$1,$2,n,'custom-v1.0',$3::jsonb,$4::jsonb FROM generate_series(1,501) n",
+      [
+        a.tid,
+        botId,
+        JSON.stringify({
+          direction: "NONE",
+          reasons: ["ENTRY_RULE_1_WAIT"],
+          apiSecret: "do-not-export-fixture",
+          diagnostics: { RSI14: 40 },
+        }),
+        JSON.stringify({ approved: false, outcome: "NO_ENTRY_SIGNAL" }),
+      ],
+    );
+  });
+  const exported = await app.inject({
+    url: `/api/bots/${botId}/diagnostics?hours=24`,
+    headers: a.headers,
+  });
+  assert.equal(exported.statusCode, 200, exported.body);
+  const report = exported.json();
+  assert.equal(report.history.signals.total, 501);
+  assert.equal(report.history.signals.included, 500);
+  assert.equal(report.history.signals.truncated, true);
+  assert.equal(report.summary.counts.fills, 0);
+  assert.equal(report.bot.custom_strategy_id, second.json().id);
+  assert.ok(
+    report.summary.findings.some((v: string) =>
+      v.includes("no entry or exit signal"),
+    ),
+  );
+  assert.equal(exported.body.includes("do-not-export-fixture"), false);
+  assert.equal("credentials" in report.bot, false);
+  assert.equal(
+    (
+      await app.inject({
+        url: `/api/bots/${botId}/diagnostics`,
+        headers: b.headers,
+      })
+    ).statusCode,
+    404,
+  );
+  assert.equal(
+    (await app.inject({ url: `/api/bots/${botId}/diagnostics` })).statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: `/api/bots/${botId}/diagnostics?hours=999`,
+        headers: a.headers,
+      })
+    ).statusCode,
+    400,
+  );
 });

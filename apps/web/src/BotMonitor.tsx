@@ -1,3 +1,4 @@
+import { BotDiagnostics } from "./BotDiagnostics.tsx";
 import { MonitorHistory } from "./MonitorHistory.tsx";
 import { monitorTime as when } from "./monitor-time.ts";
 import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
@@ -58,6 +59,7 @@ const tabs = [
   ["activity", "Activity"],
   ["events", "Order events"],
   ["runs", "Start / stop runs"],
+  ["diagnostics", "Diagnostics & export"],
   ["configuration", "Configuration"],
 ];
 export function BotMonitor({
@@ -132,7 +134,10 @@ export function BotMonitor({
   const filterable = !["activity", "ai", "runs"].includes(tab),
     effectiveRun = filterable ? runId : "";
   async function history(append = false) {
-    if (["overview", "configuration"].includes(tab) || historyBusy.current)
+    if (
+      ["overview", "configuration", "diagnostics"].includes(tab) ||
+      historyBusy.current
+    )
       return;
     historyBusy.current = true;
     const generation = historyGeneration.current;
@@ -169,7 +174,7 @@ export function BotMonitor({
   }, [id, tab, effectiveRun]);
   // Poll the first page while inspecting current history; preserve older loaded pages until explicit refresh.
   useEffect(() => {
-    if (["overview", "configuration"].includes(tab)) return;
+    if (["overview", "configuration", "diagnostics"].includes(tab)) return;
     const timer = setInterval(() => {
       if (items.length <= 25) void history();
     }, 5000);
@@ -660,7 +665,10 @@ export function BotMonitor({
           </section>
         </div>
       )}
-      {!["overview", "configuration"].includes(tab) && (
+      {tab === "diagnostics" && (
+        <BotDiagnostics key={id} id={id} request={request} />
+      )}
+      {!["overview", "configuration", "diagnostics"].includes(tab) && (
         <>
           <div className="monitor-history-controls">
             {filterable && tab !== "runs" && (
