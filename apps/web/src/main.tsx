@@ -1,3 +1,4 @@
+import { AdminUsers } from "./AdminUsers.tsx";
 import {
   StrategyCreator,
   StrategyFields,
@@ -418,7 +419,7 @@ function App() {
             "Signals",
             "Activity",
             "Security",
-            ...(user.platformAdmin ? ["Admin Settings"] : []),
+            ...(user.platformAdmin ? ["Admin Users", "Admin Settings"] : []),
           ].map((p, i) => (
             <button
               className={page === p ? "selected" : ""}
@@ -704,6 +705,9 @@ function App() {
                     </small>
                   </section>
                 </>
+              )}
+              {page === "Admin Users" && user.platformAdmin && (
+                <AdminUsers request={api} />
               )}
               {page === "Admin Settings" && user.platformAdmin && (
                 <AdminSettings request={api} />

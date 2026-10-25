@@ -358,7 +358,8 @@ export function registerPlatformRoutes(app: FastifyInstance) {
               [tid],
             )
           ).rows[0].n,
-        ) >= e.limits.paper
+        ) >= e.limits.paper &&
+        !e.unlimited
       )
         return reply.code(409).send({ error: "PAPER_PLAN_LIMIT" });
       await db.query(
@@ -659,7 +660,8 @@ export function registerPlatformRoutes(app: FastifyInstance) {
               [tid],
             )
           ).rows[0].n,
-        ) >= e.limits.marketplace
+        ) >= e.limits.marketplace &&
+        !e.unlimited
       )
         return reply.code(409).send({ error: "SUBSCRIPTION_PLAN_LIMIT" });
       await db.query(

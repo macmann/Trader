@@ -85,7 +85,7 @@ export async function dispatchIntent(
           )
         ).rows[0].n,
       );
-    if (count > e.limits.bots) {
+    if (!e.unlimited && count > e.limits.bots) {
       await cancelInternal(db, tid, id, "SUBSCRIPTION_PLAN_LIMIT");
       return false;
     }

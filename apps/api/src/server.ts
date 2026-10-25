@@ -1,3 +1,4 @@
+import { registerAdminUserRoutes } from "./admin-users-routes.ts";
 import { registerBotDiagnostics } from "./bot-diagnostics.ts";
 import {
   registerStrategyRoutes,
@@ -494,7 +495,8 @@ app.post("/api/connections", async (req, reply) => {
             [tid],
           )
         ).rows[0].n,
-      ) >= e.limits.connections
+      ) >= e.limits.connections &&
+      !e.unlimited
     )
       throw Object.assign(Error("CONNECTION_PLAN_LIMIT"), { statusCode: 409 });
     await db.query(
@@ -615,7 +617,8 @@ app.post("/api/bots", async (req, reply) => {
             [tid],
           )
         ).rows[0].n,
-      ) >= entitlement.limits.bots
+      ) >= entitlement.limits.bots &&
+      !entitlement.unlimited
     )
       return reply.code(409).send({ error: "BOT_PLAN_LIMIT" });
     try {
@@ -754,6 +757,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
 registerBotMonitorRoutes(app);
 registerBotDiagnostics(app);
 registerInstallationRoutes(app);
+registerAdminUserRoutes(app);
 registerPlatformRoutes(app);
 registerIntelligenceRoutes(app);
 registerAdvancedRoutes(app);

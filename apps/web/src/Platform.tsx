@@ -759,9 +759,11 @@ export function Platform({
         <section className="panel">
           <h2>{plan.plan} plan</h2>
           <p>
-            Entitlements apply to this workspace. Payment collection is not
-            enabled. Plan changes require a signed event from the platform
-            billing gateway.
+            {plan.unlimited
+              ? "This installation-owner workspace has unlimited subscription allowances. Trading risk controls and the platform AI spending budget still apply."
+              : plan.adminManaged
+                ? "This workspace has an administrator-assigned plan. Contact the platform administrator to change it."
+                : "Entitlements apply to this workspace. Platform administrators can assign plans from Admin Users. Billing events apply when no admin assignment is active."}
           </p>
           <div className="comparison-grid">
             {Object.entries(plan.plans).map(([name, v]: any) => (
