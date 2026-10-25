@@ -59,8 +59,13 @@ test("monitoring upgrade preserves legacy bots, orders and fills and does not in
       "INSERT INTO executions(id,tenant_id,order_id,quantity,price,fee,executed_at) VALUES($1,$2,$3,.001,50000,.05,now())",
       [randomUUID(), tid, oid],
     );
+    await db.query("INSERT INTO platform_operators(user_id) VALUES($1)", [uid]);
     await migrate(db);
     await migrate(db);
+    assert.equal(
+      (await db.query("SELECT user_id FROM platform_owner")).rows[0].user_id,
+      uid,
+    );
     assert.equal(
       (await db.query("SELECT status FROM bots WHERE id=$1", [bid])).rows[0]
         .status,

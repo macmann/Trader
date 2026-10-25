@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { app } from "../apps/api/src/server.ts";
-import { pool } from "../apps/api/src/db.ts";
+import { pool, tenant } from "../apps/api/src/db.ts";
+import {
+  entitlements,
+  consume,
+  userContext,
+} from "../apps/api/src/platform.ts";
 import {
   runtimeConfiguration,
   runtimeProvider,
@@ -344,6 +349,161 @@ try {
     changed.rows.map((row) => row.data.enabled),
     [true, false],
   );
+
+  // Setup owner has a protected unlimited personal workspace; ordinary workspace admins do not.
+  const me = (await request("/auth/me")).json(),
+    ownerId =
+      me.userId ??
+      (
+        await admin.query(
+          "SELECT id FROM users WHERE email='owner@example.com'",
+        )
+      ).rows[0].id;
+  const ownerWorkspace = me.tenantId;
+  assert.equal((await request("/subscription")).json().plan, "UNLIMITED");
+  assert.equal((await request("/subscription")).json().unlimited, true);
+  assert.equal(
+    (await admin.query("SELECT user_id FROM platform_owner")).rows[0].user_id,
+    ownerId,
+  );
+  const directory = await request("/admin/users?limit=1&offset=0");
+  assert.equal(directory.statusCode, 200, directory.body);
+  assert.equal(directory.json().accounts.length, 1);
+  assert.ok(directory.json().total >= 2);
+  assert.equal(directory.body.includes("password_hash"), false);
+  assert.equal(directory.body.includes("credentials"), false);
+  const actorHeaders = {
+    origin,
+    cookie: "session=" + session,
+    "x-csrf-token": "csrf",
+  };
+  assert.equal(
+    (await app.inject({ url: "/api/admin/users", headers: actorHeaders }))
+      .statusCode,
+    403,
+  );
+  assert.equal((await app.inject({ url: "/api/admin/users" })).statusCode, 401);
+  await assert.rejects(
+    userContext(actor, (db) =>
+      db.query("SELECT admin_account_directory('',25,0)"),
+    ),
+    /PLATFORM_ADMIN_REQUIRED/,
+  );
+  await assert.rejects(
+    tenant(workspace, (db) =>
+      db.query(
+        "UPDATE subscriptions SET admin_plan_override='PRO' WHERE tenant_id=$1",
+        [workspace],
+      ),
+    ),
+    /permission denied/,
+  );
+  await assert.rejects(
+    pool.query("UPDATE platform_owner SET user_id=$1", [actor]),
+    /permission denied/,
+  );
+  const change = (plan: string | null, pw = password) =>
+    request(`/admin/workspaces/${workspace}/plan`, "PATCH", {
+      plan,
+      password: pw,
+    });
+  assert.equal((await change("PRO", "wrong")).statusCode, 401);
+  const planChanged = await change("PRO");
+  assert.equal(planChanged.statusCode, 200, planChanged.body);
+  assert.equal(
+    (await tenant(workspace, (db) => entitlements(db, workspace))).plan,
+    "PRO",
+  );
+  await admin.query(
+    "UPDATE subscriptions SET plan='FREE',status='CANCELLED' WHERE tenant_id=$1",
+    [workspace],
+  );
+  assert.equal(
+    (await tenant(workspace, (db) => entitlements(db, workspace))).plan,
+    "PRO",
+    "Billing changes must not overwrite an admin assignment",
+  );
+  assert.equal((await change("FREE")).statusCode, 200);
+  const free = await tenant(workspace, (db) => entitlements(db, workspace));
+  assert.equal(free.plan, "FREE");
+  assert.equal(free.unlimited, false);
+  await tenant(workspace, async (db) => {
+    await db.query(
+      "INSERT INTO usage_records(tenant_id,metric,units,reference) VALUES($1,'ai',20,'admin-test-limit')",
+      [workspace],
+    );
+  });
+  await assert.rejects(
+    tenant(workspace, (db) =>
+      consume(db, workspace, "ai", "blocked-after-downgrade"),
+    ),
+    /MONTHLY_QUOTA_EXCEEDED/,
+  );
+  assert.equal((await change(null)).statusCode, 200);
+  assert.equal(
+    (await tenant(workspace, (db) => entitlements(db, workspace))).adminManaged,
+    false,
+  );
+  assert.equal(
+    (
+      await request(`/admin/workspaces/${ownerWorkspace}/plan`, "PATCH", {
+        plan: "FREE",
+        password,
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal((await request("/subscription")).json().unlimited, true);
+  const noCsrf = await app.inject({
+    url: `/api/admin/workspaces/${workspace}/plan`,
+    method: "PATCH",
+    headers: { origin, cookie: headers.cookie },
+    payload: { plan: "PRO", password },
+  });
+  assert.equal(noCsrf.statusCode, 403);
+  assert.equal(
+    (
+      await app.inject({
+        url: `/api/admin/workspaces/${workspace}/plan`,
+        method: "PATCH",
+        headers: actorHeaders,
+        payload: { plan: "PRO", password },
+      })
+    ).statusCode,
+    403,
+  );
+  // Owner really exceeds the former PRO cap through the public bot API, not just a UI label.
+  const connection = randomUUID();
+  await tenant(ownerWorkspace, async (db) => {
+    await db.query(
+      "INSERT INTO exchange_connections(id,tenant_id,name,environment,credentials,status,permissions) VALUES($1,$2,'Owner fixture','TESTNET','fixture','CONNECTED','{}')",
+      [connection, ownerWorkspace],
+    );
+    await db.query(
+      "INSERT INTO usage_records(tenant_id,metric,units,reference) VALUES($1,'ai',100000,'owner-unlimited-check')",
+      [ownerWorkspace],
+    );
+    await consume(db, ownerWorkspace, "ai", "owner-allowed");
+  });
+  for (let i = 0; i < 12; i++) {
+    const created = await request("/bots", "POST", {
+      name: `Unlimited bot ${i}`,
+      connectionId: connection,
+      config: { capital: 1, maxTrade: 1 },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+  }
+  const changes = (
+    await admin.query(
+      "SELECT data FROM audit_logs WHERE action='ADMIN_PLAN_CHANGED' ORDER BY id",
+    )
+  ).rows;
+  assert.equal(changes.length, 3);
+  assert.ok(changes.every((r) => r.data.actorUserId === ownerId));
+  assert.equal(JSON.stringify(changes).includes(password), false);
+  const searched = await request(`/admin/users?search=${actor}`);
+  assert.equal(searched.statusCode, 200);
+  assert.equal(searched.json().accounts[0].user_id, actor);
   console.log(
     "PASS: token-gated setup, concurrent claim, disabled signup, platform authorization, CSRF, password confirmation, encrypted/redacted settings, dynamic providers and key removal",
   );

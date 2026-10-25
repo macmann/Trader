@@ -48,15 +48,28 @@ export async function entitlements(db: pg.PoolClient, tid: string) {
   const s = (
     await db.query("SELECT * FROM subscriptions WHERE tenant_id=$1", [tid])
   ).rows[0];
+  const unlimited = !!(
+    await db.query(
+      "SELECT 1 FROM platform_owner o JOIN workspaces w ON w.owner_id=o.user_id WHERE w.id=$1 AND w.kind='PERSONAL'",
+      [tid],
+    )
+  ).rowCount;
   const effective =
-    s?.status === "ACTIVE" &&
+    s?.admin_plan_override ??
+    (s?.status === "ACTIVE" &&
     (!s.period_end || s.period_end.getTime() > Date.now())
       ? (s.plan as keyof typeof plans)
-      : "FREE";
+      : "FREE");
   return {
-    plan: effective,
+    plan: unlimited ? "UNLIMITED" : effective,
+    unlimited,
+    adminManaged: !!s?.admin_plan_override,
     subscription: s ?? null,
-    limits: plans[effective] ?? plans.FREE,
+    limits: unlimited
+      ? (Object.fromEntries(
+          Object.keys(plans.FREE).map((key) => [key, Number.MAX_SAFE_INTEGER]),
+        ) as Record<keyof typeof plans.FREE, number>)
+      : (plans[effective as keyof typeof plans] ?? plans.FREE),
   };
 }
 export async function consume(
@@ -77,7 +90,7 @@ export async function consume(
         )
       ).rows[0].n,
     );
-  if (used >= e.limits[metric])
+  if (!e.unlimited && used >= e.limits[metric])
     throw Object.assign(Error("MONTHLY_QUOTA_EXCEEDED"), { statusCode: 429 });
   await db.query(
     "INSERT INTO usage_records(tenant_id,metric,units,reference) VALUES($1,$2,1,$3) ON CONFLICT DO NOTHING",

@@ -1256,3 +1256,57 @@ label small {
     background: white;
   }
 }
+.admin-accounts td {
+  padding: 18px 20px;
+  vertical-align: top;
+  border-bottom: 1px solid #293a4a;
+  min-width: 150px;
+  overflow-wrap: anywhere;
+}
+.admin-accounts small {
+  display: block;
+  color: #96aabd;
+  font-size: 12px;
+  margin-top: 7px;
+}
+.admin-accounts details {
+  margin-top: 12px;
+  font-size: 12px;
+}
+.admin-accounts summary {
+  cursor: pointer;
+  color: #a6cdf1;
+}
+.admin-accounts code {
+  display: block;
+  font-size: 11px;
+  margin-top: 8px;
+}
+.admin-plan-editor {
+  margin-top: 24px;
+  padding: 24px;
+  border: 1px solid #334e63;
+  border-radius: 12px;
+  background: #101c27;
+}
+@media (max-width: 760px) {
+  .admin-accounts td {
+    display: block;
+    min-width: 0;
+    padding: 14px 0;
+    border: 0;
+  }
+  .admin-accounts td::before {
+    content: attr(data-label);
+    display: block;
+    color: #96aabd;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .admin-users .row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
