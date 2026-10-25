@@ -1,3 +1,4 @@
+import { MonitorHistory } from "./MonitorHistory.tsx";
 import { monitorTime as when } from "./monitor-time.ts";
 import { botActionEnabled } from "../../../packages/core/src/bot-actions.ts";
 import React, { useEffect, useRef, useState } from "react";
@@ -709,40 +710,40 @@ export function BotMonitor({
             records.
           </p>
           {historyError && <p role="alert">{historyError}</p>}
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  {(columns[tab] ?? []).map(([key, label]) => (
-                    <th key={key}>{label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((row) => (
-                  <tr key={row.id}>
-                    {columns[tab].map(([key]) => (
-                      <td key={key}>
-                        {cell(row, key)}
-                        {tab === "runs" && key === "id" && (
-                          <button
-                            onClick={() => {
-                              setRunId(row.id);
-                              setTab("fills");
-                            }}
-                          >
-                            View entries / exits
-                          </button>
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <MonitorHistory
+            tab={tab}
+            items={items}
+            columns={columns[tab] ?? []}
+            cell={cell}
+            onSelectRun={(id) => {
+              setRunId(id);
+              setTab("fills");
+            }}
+          />
           {!items.length && !loading && !historyError && (
-            <p>No records for this view yet.</p>
+            <div className="monitor-history-empty">
+              <span className="history-overline">
+                {tab === "ai"
+                  ? "AI decision history"
+                  : tab === "fills"
+                    ? "Trade execution history"
+                    : "Bot history"}
+              </span>
+              <h3>
+                {tab === "ai"
+                  ? "No AI decisions yet"
+                  : tab === "fills"
+                    ? "No fills yet"
+                    : "No records yet"}
+              </h3>
+              <p>
+                {tab === "ai"
+                  ? "Completed analyses will appear here with the model, indicators and reasons behind each decision."
+                  : tab === "fills"
+                    ? "Actual entries and exits appear here after an approved order fills on the exchange."
+                    : "Records will appear here as your bot runs. Try another history scope to see earlier activity."}
+              </p>
+            </div>
           )}
           {loading && <p>Loading history…</p>}
           {cursor && (
