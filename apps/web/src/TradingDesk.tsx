@@ -202,7 +202,7 @@ export function TradingDesk({
             <p className="muted">
               Stop the bot and resolve any open position or order before
               changing configuration. Futures support AI Strategy with isolated
-              1× margin in Testnet/Demo.
+              1×–20× margin in Testnet/Demo.
             </p>
             <form
               key={

@@ -1071,7 +1071,7 @@ test("strategy creator versions are immutable, tenant scoped and configurable on
     method: "PATCH",
     url: `/api/bots/${botId}/config`,
     headers: a.headers,
-    payload: { timeframe: "5" },
+    payload: { timeframe: "2" },
   });
   assert.equal(badInterval.statusCode, 400);
   const models = await app.inject({

@@ -1,10 +1,11 @@
+import { timeframeLabel } from "../../../packages/trading/src/timeframes.ts";
 import React, { useEffect, useRef, useState } from "react";
 export function readableDiagnostics(report: any) {
   const lines = [
     "# Bot diagnostic report",
     `Generated: ${report.generatedAt}`,
     `Bot: ${report.bot.name} (${report.bot.id})`,
-    `Status: ${report.bot.status} | ${report.bot.symbol} | ${report.bot.timeframe} minute candles | ${report.bot.strategy_version}`,
+    `Status: ${report.bot.status} | ${report.bot.symbol} | ${timeframeLabel(report.bot.timeframe)} candles | ${report.bot.strategy_version}`,
     `Period: ${report.window.since} to ${report.generatedAt} (UTC)`,
     "",
     "## Findings",

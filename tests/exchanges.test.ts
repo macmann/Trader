@@ -1,3 +1,4 @@
+import { BybitAdapter } from "../packages/core/src/index.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
@@ -166,14 +167,27 @@ test("OKX candle requests map each selectable interval and exclude incomplete ca
       ["0", "10", "12", "9", "11", "100", "0", "0", "1"],
     ]);
   });
-  for (const interval of ["15", "30", "60"]) {
+  for (const interval of ["5", "15", "30", "60", "240", "1440"]) {
     const candles = await adapter.getCandles("BTCUSDT", interval, 200);
     assert.equal(candles.length, 1);
     assert.equal(candles[0].time, 0);
   }
-  assert.deepEqual(bars, ["15m", "30m", "1H"]);
+  assert.deepEqual(bars, ["5m", "15m", "30m", "1H", "4H", "1Dutc"]);
   await assert.rejects(
-    adapter.getCandles("BTCUSDT", "5"),
+    adapter.getCandles("BTCUSDT", "2"),
     /UNSUPPORTED_TIMEFRAME/,
   );
+});
+
+test("Bybit Spot translates daily intervals without changing minute intervals", async () => {
+  const adapter = new BybitAdapter("TESTNET"),
+    intervals: string[] = [];
+  adapter.request = async (_path: string, p: any) => {
+    intervals.push(p.interval);
+    assert.equal(p.category, "spot");
+    return { list: [] };
+  };
+  for (const interval of ["5", "15", "30", "60", "240", "1440"])
+    await adapter.getCandles("BTCUSDT", interval);
+  assert.deepEqual(intervals, ["5", "15", "30", "60", "240", "D"]);
 });

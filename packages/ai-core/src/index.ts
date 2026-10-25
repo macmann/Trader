@@ -1,3 +1,7 @@
+import {
+  timeframeLabels,
+  timeframeLabel,
+} from "../../trading/src/timeframes.ts";
 import { duration } from "../../trading/src/creator.ts";
 import { symbolSchema, type Symbol } from "../../trading/src/index.ts";
 import { z } from "zod";
@@ -52,7 +56,7 @@ export type NewsAnalysis = z.infer<typeof newsAnalysisSchema>;
 export const marketInputSchema = z.strictObject({
   symbol: symbolSchema,
   candleTime: z.number().int().nonnegative(),
-  interval: z.enum(["15m", "30m", "1h"]),
+  interval: z.enum(timeframeLabels),
   price: z.number().positive(),
   indicators: z.strictObject({
     ema9: z.number().positive(),
@@ -177,7 +181,7 @@ export function buildMarketInput(
   return marketInputSchema.parse({
     symbol,
     candleTime: last.time,
-    interval: timeframe === "60" ? "1h" : `${timeframe}m`,
+    interval: timeframeLabel(timeframe),
     price: last.close,
     indicators: {
       ema9: ema(closes, 9).at(-1),

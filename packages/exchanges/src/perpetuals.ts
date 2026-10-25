@@ -1,3 +1,4 @@
+import { bybitInterval, okxInterval } from "../../trading/src/timeframes.ts";
 import { Decimal } from "decimal.js";
 import {
   BybitAdapter,
@@ -22,7 +23,7 @@ export interface PerpetualAdapter extends ExchangeAdapter {
   funding(
     since: number,
   ): Promise<{ id: string; amount: string; time: number }[]>;
-  prepare(direction: "LONG" | "SHORT"): Promise<void>;
+  prepare(direction: "LONG" | "SHORT", leverage?: number): Promise<void>;
   availableMargin(): Promise<string>;
   closeOnly: boolean;
 }
@@ -202,12 +203,15 @@ export class PerpetualExchange implements PerpetualAdapter {
     interval = "15",
     limit = 200,
   ): Promise<Candle[]> {
-    if (!["15", "30", "60"].includes(interval))
-      throw Error("UNSUPPORTED_TIMEFRAME");
     if (this.provider !== "OKX") {
       const r = await this.bybit.request(
         "/v5/market/kline",
-        { category: "linear", symbol: this.symbol, interval, limit },
+        {
+          category: "linear",
+          symbol: this.symbol,
+          interval: bybitInterval(interval),
+          limit,
+        },
         "GET",
         false,
       );
@@ -227,7 +231,7 @@ export class PerpetualExchange implements PerpetualAdapter {
         "/api/v5/market/candles",
         {
           instId: this.inst,
-          bar: interval === "60" ? "1H" : `${interval}m`,
+          bar: okxInterval(interval),
           limit,
         },
         "GET",
@@ -388,18 +392,33 @@ export class PerpetualExchange implements PerpetualAdapter {
         isolated: p.mgnMode === "isolated",
       }));
   }
-  async prepare(direction: "LONG" | "SHORT") {
+  async prepare(direction: "LONG" | "SHORT", leverage = 1) {
+    if (!Number.isInteger(leverage) || leverage < 1 || leverage > 20)
+      throw Error("INVALID_LEVERAGE");
     if (this.provider === "OKX") {
       await this.okx.request(
         "/api/v5/account/set-leverage",
         {
           instId: this.inst,
-          lever: "1",
+          lever: String(leverage),
           mgnMode: "isolated",
           ...(this.hedge ? { posSide: direction.toLowerCase() } : {}),
         },
         "POST",
       );
+      const configured = await this.okx.request(
+        "/api/v5/account/leverage-info",
+        { instId: this.inst, mgnMode: "isolated" },
+      );
+      if (
+        !configured.length ||
+        configured.some(
+          (v: any) =>
+            !/^\d+(\.\d+)?$/.test(String(v.lever)) ||
+            !dec(v.lever).eq(leverage),
+        )
+      )
+        throw Error("LEVERAGE_VERIFICATION_FAILED");
       return;
     }
     try {
@@ -408,14 +427,28 @@ export class PerpetualExchange implements PerpetualAdapter {
         {
           category: "linear",
           symbol: this.symbol,
-          buyLeverage: "1",
-          sellLeverage: "1",
+          buyLeverage: String(leverage),
+          sellLeverage: String(leverage),
         },
         "POST",
       );
     } catch (e) {
       if (!(e instanceof ExchangeError) || e.code !== 110043) throw e;
     }
+    const configured = await this.bybit.request("/v5/position/list", {
+      category: "linear",
+      symbol: this.symbol,
+    });
+    if (
+      !configured.list?.length ||
+      configured.list.some(
+        (v: any) =>
+          v.positionIdx !== 0 ||
+          !/^\d+(\.\d+)?$/.test(String(v.leverage)) ||
+          !dec(v.leverage).eq(leverage),
+      )
+    )
+      throw Error("LEVERAGE_VERIFICATION_FAILED");
   }
   async funding(since: number) {
     const result: { id: string; amount: string; time: number }[] = [];

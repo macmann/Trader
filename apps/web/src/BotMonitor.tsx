@@ -1,3 +1,4 @@
+import { timeframeLabel } from "../../../packages/trading/src/timeframes.ts";
 import { BotDiagnostics } from "./BotDiagnostics.tsx";
 import { MonitorHistory } from "./MonitorHistory.tsx";
 import { monitorTime as when } from "./monitor-time.ts";
@@ -19,8 +20,14 @@ const descriptions: Record<string, string> = {
     "Futures requires isolated margin. Review the account margin mode at the exchange; this app does not switch account-wide modes.",
   ONE_WAY_POSITION_MODE_REQUIRED:
     "Futures requires one-way/net position mode. Review the contract position mode at the exchange before starting.",
+  LEVERAGE_VERIFICATION_FAILED:
+    "The exchange did not confirm the selected leverage. No entry was submitted; review account and contract leverage settings.",
+  STOP_LOSS_TOO_WIDE_FOR_LEVERAGE:
+    "The stop-loss distance is too wide for the selected leverage. Choose a closer stop or lower leverage.",
+  FUTURES_LEVERAGE_OR_MARGIN_MISMATCH:
+    "The exchange position’s leverage or margin mode differs from this bot’s configuration; review the exchange position before resuming.",
   FUTURES_ISOLATED_1X_REQUIRED:
-    "The exchange position must use isolated margin at 1× leverage for this release.",
+    "The observed leverage or margin mode did not match the worker’s supported configuration at that check.",
   UNEXPECTED_FUTURES_POSITION:
     "The exchange contract position does not match this bot’s ledger. Existing manual positions are not adopted or sold by the bot.",
   RECONCILIATION_FAILED:
@@ -328,10 +335,10 @@ export function BotMonitor({
           <p>
             {b.symbol} ·{" "}
             {b.market_type === "LINEAR"
-              ? "USDT perpetual · 1× isolated"
+              ? `USDT perpetual · ${b.leverage}× isolated`
               : "Spot"}{" "}
-            · {b.timeframe === "60" ? "1h" : `${b.timeframe}m`} ·{" "}
-            {b.strategy_version} · {b.connection_name}
+            · {timeframeLabel(b.timeframe)} · {b.strategy_version} ·{" "}
+            {b.connection_name}
           </p>
         </div>
         <button onClick={onClose}>Close monitor ✕</button>
@@ -528,8 +535,8 @@ export function BotMonitor({
             <section>
               <h3>Futures position</h3>
               <p>
-                USDT linear perpetual · Isolated margin · 1× leverage ·
-                One-way/net mode
+                USDT linear perpetual · Isolated margin · {b.leverage}× leverage
+                · One-way/net mode
               </p>
               <p>
                 Direction:{" "}
@@ -590,7 +597,7 @@ export function BotMonitor({
                         b.strategy_version.startsWith("breakout") ||
                         b.strategy_version.startsWith("custom") ||
                         b.strategy_version.startsWith("ai-")
-                      ? `On a new closed ${b.timeframe === "60" ? "1h" : b.timeframe + "m"} candle; positions checked between candles`
+                      ? `On a new closed ${timeframeLabel(b.timeframe)} candle; positions checked between candles`
                       : "Each worker cycle when data and account checks are ready"}
                 </dd>
                 <dt>Software stop level (last computation)</dt>

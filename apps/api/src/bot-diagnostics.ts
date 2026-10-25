@@ -87,7 +87,7 @@ export function registerBotDiagnostics(app: FastifyInstance) {
       return tenant(tid, async (db) => {
         const bot = (
           await db.query(
-            "SELECT b.id,b.name,b.status,b.symbol,b.timeframe,b.market_type,b.strategy_version,b.config,b.advanced_config,b.ai_mode,b.ai_strategy_config,b.custom_strategy_id,b.last_candle,b.created_at,c.id AS connection_id,c.provider,c.environment,c.status AS connection_status,CASE WHEN b.market_type='LINEAR' THEN b.futures_reconciled_at ELSE c.reconciled_at END AS reconciled_at FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
+            "SELECT b.id,b.name,b.status,b.symbol,b.timeframe,b.market_type,b.leverage,b.strategy_version,b.config,b.advanced_config,b.ai_mode,b.ai_strategy_config,b.custom_strategy_id,b.last_candle,b.created_at,c.id AS connection_id,c.provider,c.environment,c.status AS connection_status,CASE WHEN b.market_type='LINEAR' THEN b.futures_reconciled_at ELSE c.reconciled_at END AS reconciled_at FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
             [id, tid],
           )
         ).rows[0];
@@ -150,7 +150,7 @@ export function registerBotDiagnostics(app: FastifyInstance) {
             where: "x.bot_id=$1 AND x.tenant_id=$2",
             time: "x.updated_at",
             fields:
-              "x.id,x.signal_id,x.client_id,x.exchange_id,x.side,x.symbol,x.quantity,x.market_type,x.purpose,x.position_direction,x.order_type,x.limit_price,x.state,x.strategy_version,x.run_id,x.created_at,x.updated_at",
+              "x.id,x.signal_id,x.client_id,x.exchange_id,x.side,x.symbol,x.quantity,x.market_type,x.purpose,x.position_direction,x.leverage,x.order_type,x.limit_price,x.state,x.strategy_version,x.run_id,x.created_at,x.updated_at",
           },
           fills: {
             from: "executions x JOIN orders o ON o.id=x.order_id AND o.tenant_id=x.tenant_id",

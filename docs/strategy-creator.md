@@ -1,6 +1,6 @@
 # Custom rules and AI Strategy
 
-Custom rules execute Spot Testnet/Demo orders. AI Strategy supports Spot and isolated 1× USDT perpetuals through tenant-scoped accounting and execution checks; see [futures setup](futures.md). Live execution remains disabled.
+Custom rules execute Spot Testnet/Demo orders. AI Strategy supports Spot and isolated 1×–20× USDT perpetuals through tenant-scoped accounting and execution checks; see [futures setup](futures.md). Live execution remains disabled.
 
 ## Create indicator rules
 
@@ -8,7 +8,7 @@ Open **Strategies**, name a strategy, and add entry and exit conditions. Support
 
 For example: entry EMA 9 crosses above EMA 21, RSI 14 > 50, RSI 14 < 70; exit EMA 9 crosses below EMA 21. This is an example configuration, not a profitability claim.
 
-Save the strategy, then choose **Custom indicator rules**, its saved version, and a **15-minute, 30-minute or 1-hour** candle interval when creating a bot. To revise rules, load a version and save a new version. Existing bots remain pinned to their selected version. Change a bot's version or interval in **Portfolio** after stopping it and clearing open exposure and unresolved orders. Signals and orders retain the exact custom-version identifier.
+Save the strategy, then choose **Custom indicator rules**, its saved version, and a **5-minute, 15-minute, 30-minute, 1-hour, 4-hour or 1-day** candle interval when creating a bot. To revise rules, load a version and save a new version. Existing bots remain pinned to their selected version. Change a bot's version or interval in **Portfolio** after stopping it and clearing open exposure and unresolved orders. Signals and orders retain the exact custom-version identifier.
 
 ## Use AI Strategy
 

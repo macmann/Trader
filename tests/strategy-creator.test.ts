@@ -68,7 +68,7 @@ test("crossovers require a previous-to-current crossing and exits use their own 
   assert.equal(evaluateRules(rules, down, true).direction, "EXIT");
 });
 test("each interval rejects stale, gapped or invalid candles and arbitrary AI output", () => {
-  for (const interval of ["15", "30", "60"]) {
+  for (const interval of ["5", "15", "30", "60", "240", "1440"]) {
     const ms = duration(interval),
       data = candles.map((c, i) => ({ ...c, time: i * ms }));
     assert.equal(validateCandles(data, interval, 120 * ms), true);

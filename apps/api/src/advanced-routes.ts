@@ -28,7 +28,8 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
     symbols,
     strategies,
     marketTypes: ["SPOT", "LINEAR"],
-    timeframes: ["15m", "30m", "1h"],
+    timeframes: ["5m", "15m", "30m", "1h", "4h", "1d"],
+    leverageRange: { min: 1, max: 20 },
     derivativesSupported: true,
     advancedExecutionSupported: true,
     executionEnabled: await testnetExecutionEnabled(),
@@ -80,6 +81,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           strategyVersion: strategySchema.optional(),
           timeframe: timeframeSchema.optional(),
           marketType: z.enum(["SPOT", "LINEAR"]).optional(),
+          leverage: z.number().int().min(1).max(20).optional(),
           customStrategyId: z.uuid().nullable().optional(),
           aiStrategyConfig: aiStrategyConfig.optional(),
           config: botConfig.optional(),
@@ -143,6 +145,13 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
         return reply
           .code(400)
           .send({ error: "FUTURES_AI_MARKET_STRATEGY_REQUIRED" });
+      const leverage = v.leverage ?? bot.leverage;
+      if (bot.market_type === "SPOT" && leverage !== 1)
+        return reply.code(400).send({ error: "SPOT_LEVERAGE_NOT_SUPPORTED" });
+      if (bot.market_type === "LINEAR" && config.stopLossPct * leverage >= 80)
+        return reply
+          .code(400)
+          .send({ error: "STOP_LOSS_TOO_WIDE_FOR_LEVERAGE" });
       const invalid = configurationVeto(strategy, advanced);
       if (invalid) return reply.code(400).send({ error: invalid });
       snapshot.allocated -= Number(bot.config.capital);
@@ -182,6 +191,10 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           id,
           tid,
         ],
+      );
+      await db.query(
+        "UPDATE bots SET leverage=$1 WHERE id=$2 AND tenant_id=$3",
+        [leverage, id, tid],
       );
       await db.query(
         "UPDATE positions SET peak_equity=GREATEST(0,$1::numeric+realized_pnl-fees) WHERE bot_id=$2 AND tenant_id=$3",
