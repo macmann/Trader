@@ -38,6 +38,7 @@ after(async () => {
 });
 class Broker implements PerpetualAdapter {
   price = 100;
+  leverage = 1;
   closeOnly = false;
   creates = 0;
   lostAck = false;
@@ -112,7 +113,9 @@ class Broker implements PerpetualAdapter {
   async cancelOrder() {
     return {};
   }
-  async prepare() {}
+  async prepare(_direction?: string, leverage = 1) {
+    this.leverage = leverage;
+  }
   async funding() {
     return this.fundingEvents;
   }
@@ -167,8 +170,10 @@ class Broker implements PerpetualAdapter {
             quantity: qty.abs().toFixed(),
             entryPrice: cost.div(qty.abs()).toFixed(),
             direction: qty.gt(0) ? "LONG" : "SHORT",
-            liquidationPrice: qty.gt(0) ? "0" : "200",
-            leverage: "1",
+            liquidationPrice: qty.gt(0)
+              ? "0"
+              : String(this.price * (1 + 0.9 / this.leverage)),
+            leverage: String(this.leverage),
             isolated: true,
           },
         ];
@@ -369,15 +374,17 @@ test("OKX perpetual adapter converts contracts to base units and sends isolated 
             maxLmtSz: "1000",
           },
         ]
-      : path.endsWith("/ticker")
-        ? [{ bidPx: "99.9", askPx: "100.1" }]
-        : path.endsWith("/mark-price")
-          ? [{ markPx: "100", ts: String(Date.now()) }]
-          : path.endsWith("/config")
-            ? [{ posMode: "net_mode" }]
-            : path.endsWith("/positions")
-              ? []
-              : [{ sCode: "0", ordId: "remote" }];
+      : path.endsWith("/leverage-info")
+        ? [{ lever: "1", posSide: "net" }]
+        : path.endsWith("/ticker")
+          ? [{ bidPx: "99.9", askPx: "100.1" }]
+          : path.endsWith("/mark-price")
+            ? [{ markPx: "100", ts: String(Date.now()) }]
+            : path.endsWith("/config")
+              ? [{ posMode: "net_mode" }]
+              : path.endsWith("/positions")
+                ? []
+                : [{ sCode: "0", ordId: "remote" }];
     return new Response(JSON.stringify({ code: "0", data }));
   };
   const adapter = new PerpetualExchange(
@@ -505,4 +512,81 @@ test("disabling execution after the futures send marker prevents the network ord
   });
   assert.equal(f.broker.creates, 0);
   assert.equal((await state(f)).orders[0].state, "Cancelled");
+});
+
+test("20x uses margin sizing without multiplying notional and reconciles selected leverage", async () => {
+  const f = await fixture();
+  f.action = "SELL_SHORT";
+  f.broker.cash = "1.1";
+  await admin.query("UPDATE bots SET leverage=20,timeframe='5' WHERE id=$1", [
+    f.bid,
+  ]);
+  await run(f);
+  await run(f);
+  const s = await state(f);
+  assert.equal(f.broker.leverage, 20);
+  assert.equal(f.broker.creates, 1);
+  assert.equal(s.orders[0].leverage, 20);
+  assert.ok(Number(s.position.cost) > 0 && Number(s.position.cost) <= 20);
+  assert.equal(s.position.position_direction, "SHORT");
+  f.broker.leverage = 10;
+  await assert.rejects(run(f), /FUTURES_LEVERAGE_OR_MARGIN_MISMATCH/);
+  assert.equal(f.broker.creates, 1);
+});
+test("perpetual exchanges set and verify 20x, reject out-of-range leverage and map daily UTC candles", async () => {
+  const bybit = new PerpetualExchange("BYBIT", "BTCUSDT");
+  let level = "1";
+  const calls: any[] = [];
+  bybit.bybit.request = async (path: string, p: any = {}) => {
+    calls.push({ path, p });
+    if (path.endsWith("set-leverage")) {
+      level = p.buyLeverage;
+      return {};
+    }
+    if (path.endsWith("position/list"))
+      return { list: [{ positionIdx: 0, leverage: level }] };
+    return { list: [] };
+  };
+  await bybit.prepare("LONG", 20);
+  assert.equal(level, "20");
+  assert.equal(calls[0].p.sellLeverage, "20");
+  await assert.rejects(bybit.prepare("SHORT", 21), /INVALID_LEVERAGE/);
+  await bybit.getCandles("BTCUSDT", "1440");
+  assert.equal(calls.at(-1).p.interval, "D");
+  level = "10";
+  bybit.bybit.request = async (path: string) =>
+    path.endsWith("position/list")
+      ? { list: [{ positionIdx: 0, leverage: level }] }
+      : {};
+  await assert.rejects(
+    bybit.prepare("LONG", 20),
+    /LEVERAGE_VERIFICATION_FAILED/,
+  );
+  const requests: any[] = [];
+  let okLevel = "1";
+  const okx = new PerpetualExchange(
+    "OKX",
+    "BTCUSDT",
+    { apiKey: "fixture", apiSecret: "fixture", passphrase: "fixture" },
+    async (url: any, init: any) => {
+      const u = new URL(String(url));
+      const body = init?.body ? JSON.parse(init.body) : null;
+      requests.push({ u, body });
+      if (u.pathname.endsWith("set-leverage")) okLevel = body.lever;
+      return new Response(
+        JSON.stringify({
+          code: "0",
+          data: u.pathname.endsWith("leverage-info")
+            ? [{ lever: okLevel, posSide: "net" }]
+            : [],
+        }),
+      );
+    },
+  );
+  await okx.prepare("SHORT", 20);
+  assert.equal(okLevel, "20");
+  await okx.getCandles("BTCUSDT", "1440");
+  assert.equal(requests.at(-1).u.searchParams.get("bar"), "1Dutc");
+  await okx.getCandles("BTCUSDT", "240");
+  assert.equal(requests.at(-1).u.searchParams.get("bar"), "4H");
 });

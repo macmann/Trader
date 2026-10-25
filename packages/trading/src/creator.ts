@@ -1,6 +1,7 @@
+import { timeframeValues } from "./timeframes.ts";
 import { z } from "zod";
 import { ema, type Candle } from "../../core/src/index.ts";
-export const timeframeSchema = z.enum(["15", "30", "60"]);
+export const timeframeSchema = z.enum(timeframeValues);
 export const duration = (interval: string) =>
   Number(timeframeSchema.parse(interval)) * 60000;
 export const indicatorSchema = z.strictObject({

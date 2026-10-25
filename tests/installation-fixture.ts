@@ -510,6 +510,8 @@ try {
     name: "Owner futures",
     connectionId: connection,
     marketType: "LINEAR",
+    leverage: 20,
+    timeframe: "1440",
     strategyVersion: "ai-v1.0",
     aiStrategyConfig: { model: "gpt-4.1-mini", minConfidence: 70 },
     config: { capital: 100, maxTrade: 20 },
@@ -534,6 +536,36 @@ try {
   const futureMonitor = await request(`/bots/${future.json().id}/monitor`);
   assert.equal(futureMonitor.statusCode, 200, futureMonitor.body);
   assert.equal(futureMonitor.json().bot.market_type, "LINEAR");
+  assert.equal(futureMonitor.json().bot.leverage, 20);
+  assert.equal(futureMonitor.json().bot.timeframe, "1440");
+  assert.equal(
+    (
+      await request(`/bots/${future.json().id}/config`, "PATCH", {
+        leverage: 10,
+        timeframe: "240",
+      })
+    ).statusCode,
+    200,
+  );
+  const invalidLeverage = await request("/bots", "POST", {
+    ...futuresConfig,
+    symbol: "ETHUSDT",
+    leverage: 21,
+  });
+  assert.equal(invalidLeverage.statusCode, 400);
+  const unsafeStop = await request("/bots", "POST", {
+    ...futuresConfig,
+    symbol: "ETHUSDT",
+    config: { capital: 100, maxTrade: 20, stopLossPct: 5 },
+  });
+  assert.equal(unsafeStop.statusCode, 400);
+  const spotLeverage = await request("/bots", "POST", {
+    name: "Spot",
+    connectionId: connection,
+    leverage: 2,
+    config: {},
+  });
+  assert.equal(spotLeverage.statusCode, 400);
   const changes = (
     await admin.query(
       "SELECT data FROM audit_logs WHERE action='ADMIN_PLAN_CHANGED' ORDER BY id",

@@ -586,6 +586,7 @@ app.post("/api/bots", async (req, reply) => {
         strategyVersion: strategySchema.default("trend-v1.0"),
         timeframe: timeframeSchema.default("15"),
         marketType: z.enum(["SPOT", "LINEAR"]).default("SPOT"),
+        leverage: z.number().int().min(1).max(20).default(1),
         customStrategyId: z.uuid().nullable().default(null),
         aiStrategyConfig: aiStrategyConfig.optional(),
         advancedConfig: advancedConfig.default(() => advancedConfig.parse({})),
@@ -633,6 +634,10 @@ app.post("/api/bots", async (req, reply) => {
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+    if (v.marketType === "SPOT" && v.leverage !== 1)
+      return reply.code(400).send({ error: "SPOT_LEVERAGE_NOT_SUPPORTED" });
+    if (v.marketType === "LINEAR" && v.config.stopLossPct * v.leverage >= 80)
+      return reply.code(400).send({ error: "STOP_LOSS_TOO_WIDE_FOR_LEVERAGE" });
     if (
       v.marketType === "LINEAR" &&
       (v.strategyVersion !== "ai-v1.0" ||
@@ -677,7 +682,7 @@ app.post("/api/bots", async (req, reply) => {
         .code(400)
         .send({ error: "CONNECTED_TESTNET_EXCHANGE_REQUIRED" });
     await db.query(
-      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id,timeframe,custom_strategy_id,ai_strategy_config,market_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id,timeframe,custom_strategy_id,ai_strategy_config,market_type,leverage) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
       [
         id,
         tid,
@@ -692,6 +697,7 @@ app.post("/api/bots", async (req, reply) => {
         v.customStrategyId,
         JSON.stringify(v.aiStrategyConfig ?? {}),
         v.marketType,
+        v.leverage,
       ],
     );
     await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [

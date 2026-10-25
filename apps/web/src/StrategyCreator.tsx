@@ -1,3 +1,4 @@
+import { timeframes } from "../../../packages/trading/src/timeframes.ts";
 import React, { useEffect, useState } from "react";
 type Request = (path: string, method?: string, data?: unknown) => Promise<any>;
 const defaultRule = () => ({
@@ -10,6 +11,7 @@ export function strategyFields(data: FormData) {
   const strategy = String(data.get("strategyVersion"));
   return {
     timeframe: data.get("timeframe"),
+    leverage: Number(data.get("leverage") ?? 1),
     marketType: data.get("marketType") ?? "SPOT",
     customStrategyId:
       strategy === "custom-v1.0" ? data.get("customStrategyId") : null,
@@ -80,7 +82,7 @@ export function StrategyFields({
       </label>
       {market === "LINEAR" && (
         <p className="muted">
-          Testnet/Demo only · AI Strategy · Isolated margin · 1× leverage ·
+          Testnet/Demo only · AI Strategy · Isolated margin · 1×–20× leverage ·
           Market entries and reduce-only exits. Use one-way/net position mode.
           One bot owns each exchange contract; existing manual futures positions
           cannot be adopted.
@@ -105,11 +107,33 @@ export function StrategyFields({
       <label>
         Candle interval
         <select name="timeframe" defaultValue={bot?.timeframe ?? "15"}>
-          <option value="15">15 minutes</option>
-          <option value="30">30 minutes</option>
-          <option value="60">1 hour</option>
+          {timeframes.map((t) => (
+            <option value={t.value} key={t.value}>
+              {t.label}
+            </option>
+          ))}
         </select>
       </label>
+      {market === "LINEAR" ? (
+        <label>
+          Futures leverage
+          <select name="leverage" defaultValue={bot?.leverage ?? 1}>
+            {Array.from({ length: 20 }, (_, i) => (
+              <option key={i + 1} value={i + 1}>
+                {i + 1}×
+              </option>
+            ))}
+          </select>
+          <span className="muted">
+            Trade size and capital remain notional caps. Initial margin is
+            approximately trade size ÷ leverage, plus fees. Higher leverage
+            brings liquidation closer. Stop-loss distance must be below 80% of
+            the initial margin distance.
+          </span>
+        </label>
+      ) : (
+        <input type="hidden" name="leverage" value="1" />
+      )}
       {strategy === "custom-v1.0" && (
         <label>
           Saved strategy version

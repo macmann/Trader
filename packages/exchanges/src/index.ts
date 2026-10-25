@@ -1,3 +1,4 @@
+import { okxInterval } from "../../trading/src/timeframes.ts";
 import { createHmac } from "node:crypto";
 import {
   BybitAdapter,
@@ -204,14 +205,12 @@ export class OKXAdapter implements ExchangeAdapter {
     interval = "15",
     limit = 100,
   ): Promise<Candle[]> {
-    if (!["15", "30", "60"].includes(interval))
-      throw Error("UNSUPPORTED_TIMEFRAME");
     return (
       await this.request(
         "/api/v5/market/candles",
         {
           instId: instrumentId(symbol),
-          bar: interval === "60" ? "1H" : `${interval}m`,
+          bar: okxInterval(interval),
           limit,
         },
         "GET",

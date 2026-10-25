@@ -27,6 +27,23 @@ import { aiStrategy } from "./ai-strategy.ts";
 import type { BotObservation } from "./monitoring.ts";
 import type { ExecutionRuntime } from "./execution.ts";
 const D = (v: unknown) => new Decimal(String(v));
+export function estimatedMargin(notional: number, leverage: number) {
+  return notional / leverage + notional * 0.003;
+}
+async function reservedMargin(
+  db: pg.PoolClient,
+  tid: string,
+  connectionId: string,
+) {
+  return Number(
+    (
+      await db.query(
+        "SELECT COALESCE(sum(CASE WHEN o.market_type='LINEAR' THEN o.requested_notional/o.leverage+o.requested_notional*0.003 ELSE o.requested_notional END),0) AS amount FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE o.tenant_id=$1 AND b.connection_id=$2 AND NOT(o.state=ANY($3::text[])) AND ((o.market_type='LINEAR' AND o.purpose='ENTRY') OR (o.market_type='SPOT' AND o.side='Buy'))",
+        [tid, connectionId, terminal],
+      )
+    ).rows[0].amount,
+  );
+}
 export async function assertContract(
   db: pg.PoolClient,
   tid: string,
@@ -34,16 +51,16 @@ export async function assertContract(
   adapter: PerpetualAdapter,
 ) {
   const p = (
-    await db.query("SELECT * FROM positions WHERE bot_id=$1 AND tenant_id=$2", [
-      bot.id,
-      tid,
-    ])
+    await db.query(
+      "SELECT p.*,b.leverage AS bot_leverage FROM positions p JOIN bots b ON b.id=p.bot_id AND b.tenant_id=p.tenant_id WHERE p.bot_id=$1 AND p.tenant_id=$2",
+      [bot.id, tid],
+    )
   ).rows[0];
   const remote = await adapter.contractPositions();
   if (remote.length > 1) throw Error("UNEXPECTED_FUTURES_POSITION");
   const actual = remote[0];
-  if (actual && (!actual.isolated || !D(actual.leverage).eq(1)))
-    throw Error("FUTURES_ISOLATED_1X_REQUIRED");
+  if (actual && (!actual.isolated || !D(actual.leverage).eq(p.bot_leverage)))
+    throw Error("FUTURES_LEVERAGE_OR_MARGIN_MISMATCH");
   if (
     (!actual && !D(p.quantity).isZero()) ||
     (actual &&
@@ -131,7 +148,7 @@ export async function dispatchPerpetual(
   await lockPortfolio(db, tid);
   const o = (
     await db.query(
-      "SELECT o.*,b.config,b.status AS bot_status,b.connection_id,c.environment,c.status AS connection_status,s.decision FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id JOIN signals s ON s.id=o.signal_id AND s.tenant_id=o.tenant_id WHERE o.id=$1 AND o.tenant_id=$2 FOR UPDATE OF o,b,c",
+      "SELECT o.*,b.config,b.leverage AS bot_leverage,b.status AS bot_status,b.connection_id,c.environment,c.status AS connection_status,s.decision FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id JOIN signals s ON s.id=o.signal_id AND s.tenant_id=o.tenant_id WHERE o.id=$1 AND o.tenant_id=$2 FOR UPDATE OF o,b,c",
       [id, tid],
     )
   ).rows[0];
@@ -194,7 +211,7 @@ export async function dispatchPerpetual(
     const snapshot = await portfolioSnapshot(db, tid),
       notional = D(o.quantity).mul(mark).mul("1.01"),
       margin = D(await adapter.availableMargin());
-    const pending = snapshot.connections[o.connection_id]?.pending ?? 0;
+    const pending = await reservedMargin(db, tid, o.connection_id);
     if (
       (!e.unlimited && count > e.limits.bots) ||
       !D(p.quantity).isZero() ||
@@ -208,7 +225,14 @@ export async function dispatchPerpetual(
       await cancelIntent(db, tid, id, "FUTURES_BUDGET_GATE");
       return;
     }
-    await adapter.prepare(o.position_direction);
+    if (
+      o.leverage !== o.bot_leverage ||
+      config.stopLossPct * o.leverage >= 80
+    ) {
+      await cancelIntent(db, tid, id, "FUTURES_LEVERAGE_CONFIGURATION_CHANGED");
+      return;
+    }
+    await adapter.prepare(o.position_direction, o.leverage);
   }
   adapter.closeOnly = exit;
   await db.query(
@@ -217,7 +241,7 @@ export async function dispatchPerpetual(
   );
   await orderEvent(db, tid, id, "submitting", "SUBMITTING", {
     reduceOnly: exit,
-    leverage: 1,
+    leverage: o.leverage,
     marginMode: "ISOLATED",
   });
   await db.query("COMMIT");
@@ -402,7 +426,8 @@ export async function perpetualTick(
       (price - take) * mult >= 0 ||
       (remote &&
         Number(remote.liquidationPrice) > 0 &&
-        Math.abs(price - Number(remote.liquidationPrice)) / price < 0.05));
+        Math.abs(price - Number(remote.liquidationPrice)) / price <
+          Math.min(0.05, 0.2 / bot.leverage)));
   const candles = protective
       ? []
       : (await adapter.getCandles(bot.symbol, bot.timeframe, 200)).filter(
@@ -415,7 +440,7 @@ export async function perpetualTick(
     marketReceivedAt: Number(ticker.observedAt),
     reconciled: true,
     futures: {
-      leverage: 1,
+      leverage: bot.leverage,
       marginMode: "ISOLATED",
       positionDirection: qty > 0 ? p.position_direction : "FLAT",
       liquidationPrice:
@@ -517,10 +542,14 @@ export async function perpetualTick(
     trades: Number(stats.trades),
     drawdownPct: Math.max(0, ((peak - equity) / peak) * 100),
     consecutiveLosses: losses,
-    available: free - (connection?.pending ?? 0),
+    available:
+      Math.max(0, free - (await reservedMargin(db, tid, bot.connection_id))) /
+      estimatedMargin(1, bot.leverage),
     spreadPct:
       ((Number(ticker.ask1Price) - Number(ticker.bid1Price)) / price) * 100,
   });
+  if (config.stopLossPct * bot.leverage >= 80)
+    reasons.push("STOP_LOSS_TOO_WIDE_FOR_LEVERAGE");
   reasons.push(
     ...exposureVeto({
       limits: portfolio.limits,
@@ -555,7 +584,7 @@ export async function perpetualTick(
         markPrice: price,
         unrealizedPnl: unrealized,
         marginMode: "ISOLATED",
-        leverage: 1,
+        leverage: bot.leverage,
       }),
       JSON.stringify({
         approved: exit || entryAllowed,
@@ -618,7 +647,7 @@ export async function perpetualTick(
     oid = randomUUID(),
     client = randomUUID().replaceAll("-", "");
   await db.query(
-    "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state,symbol,requested_notional,strategy_version,strategy_cycle,market_type,purpose,position_direction,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'INTERNAL_CREATED',$8,$9,'ai-v1.0',$10,'LINEAR',$11,$12,$13)",
+    "INSERT INTO orders(id,tenant_id,bot_id,signal_id,client_id,side,quantity,state,symbol,requested_notional,strategy_version,strategy_cycle,market_type,purpose,position_direction,created_at,leverage) VALUES($1,$2,$3,$4,$5,$6,$7,'INTERNAL_CREATED',$8,$9,'ai-v1.0',$10,'LINEAR',$11,$12,$13,$14)",
     [
       oid,
       tid,
@@ -633,6 +662,7 @@ export async function perpetualTick(
       exit ? "EXIT" : "ENTRY",
       positionDirection,
       new Date(now),
+      bot.leverage,
     ],
   );
   await orderEvent(db, tid, oid, "intent", "INTERNAL_CREATED", {

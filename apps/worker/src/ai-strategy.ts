@@ -33,7 +33,7 @@ export async function aiStrategy(
   const input = {
     symbol: bot.symbol,
     marketType: bot.market_type ?? "SPOT",
-    leverage: 1,
+    leverage: bot.leverage ?? 1,
     marginMode: bot.market_type === "LINEAR" ? "ISOLATED" : null,
     interval: bot.timeframe,
     candleTime,

@@ -1,3 +1,4 @@
+import { timeframeLabel } from "../../../packages/trading/src/timeframes.ts";
 import { AdminUsers } from "./AdminUsers.tsx";
 import {
   StrategyCreator,
@@ -613,8 +614,8 @@ function App() {
                             {b.market_type === "LINEAR"
                               ? `Perpetual · ${b.position_direction ?? "Flat"}`
                               : "Spot"}{" "}
-                            · {b.timeframe === "60" ? "1h" : `${b.timeframe}m`}{" "}
-                            · {b.strategy_version}
+                            · {timeframeLabel(b.timeframe)} ·{" "}
+                            {b.strategy_version}
                           </p>
                           <span
                             className={

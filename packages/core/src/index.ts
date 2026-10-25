@@ -1,3 +1,4 @@
+import { bybitInterval } from "../../trading/src/timeframes.ts";
 import {
   createCipheriv,
   createDecipheriv,
@@ -308,7 +309,7 @@ export class BybitAdapter {
   ): Promise<Candle[]> {
     const r = await this.request(
       "/v5/market/kline",
-      { category: "spot", symbol, interval, limit },
+      { category: "spot", symbol, interval: bybitInterval(interval), limit },
       "GET",
       false,
     );

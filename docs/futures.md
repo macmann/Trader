@@ -1,8 +1,8 @@
 # USDT perpetual futures — Testnet/Demo
 
-Create a new bot and choose **Market → USDT perpetual · Long / Short**, **AI Strategy**, a configured model, and 15m/30m/1h candles. Existing Spot bots retain their market; converting a bot with historical Spot accounting is intentionally unavailable.
+Create a new bot and choose **Market → USDT perpetual · Long / Short**, **AI Strategy**, a configured model, and 5m/15m/30m/1h/4h/1d candles. Existing Spot bots retain their market; converting a bot with historical Spot accounting is intentionally unavailable.
 
-This release supports Bybit Global Testnet, Bybit EU Testnet (subject to exchange access), and OKX Demo USDT linear perpetuals for BTCUSDT, ETHUSDT and SOLUSDT. It is restricted to **isolated margin, 1× leverage, one-way/net position mode**, fixed trade sizing and AI Strategy. The exchange account must support the contract and have USDT collateral and the required derivatives API trading permission. Account-wide margin/position modes are checked, not changed automatically. Bybit requires its isolated-margin account mode; OKX orders explicitly use isolated margin. Per-symbol leverage is set to 1× only after flat-position and ownership checks.
+This release supports Bybit Global Testnet, Bybit EU Testnet (subject to exchange access), and OKX Demo USDT linear perpetuals for BTCUSDT, ETHUSDT and SOLUSDT. It is restricted to **isolated margin, 1×–20× leverage, one-way/net position mode**, fixed trade sizing and AI Strategy. The exchange account must support the contract and have USDT collateral and the required derivatives API trading permission. Account-wide margin/position modes are checked, not changed automatically. Bybit requires its isolated-margin account mode; OKX orders explicitly use isolated margin. Selected per-symbol leverage is set and read back before entry, after flat-position and ownership checks.
 
 ## Decisions and execution
 
@@ -26,4 +26,14 @@ Use the bot monitor for direction, P&L, funding, software protection, liquidatio
 
 Migration 013 adds market/purpose/direction metadata and the funding ledger, preserving existing Spot records. No new environment variables are required. Configure AI credentials in Admin Settings as before.
 
-Automated tests use isolated PostgreSQL and simulated exchange/provider responses. Before unattended use, verify the actual Demo/Testnet account's permissions, isolated/net mode, contract sizes, fill/cancellation behavior, funding, reconnect/restart recovery and reduce-only exits. Authenticated external futures acceptance has not been performed in this development environment. Historical futures backtesting, hedge-mode portfolios, leverage above 1× and live futures are not part of this release.
+Automated tests use isolated PostgreSQL and simulated exchange/provider responses. Before unattended use, verify the actual Demo/Testnet account's permissions, isolated/net mode, contract sizes, fill/cancellation behavior, funding, reconnect/restart recovery and reduce-only exits. Authenticated external futures acceptance has not been performed in this development environment. Historical futures backtesting, hedge-mode portfolios, leverage above 20× and live futures are not part of this release.
+
+## Leverage and candle settings
+
+Choose an integer leverage from **1× through 20×** when creating a futures bot, or change it in Portfolio while the bot is stopped/paused and has no position or unresolved orders. The exchange must support and confirm that leverage. Existing bots default to 1×. Spot remains unleveraged.
+
+Leverage does not multiply configured order sizes: capital and maximum trade remain full notional caps. For a $20 trade at 20×, estimated initial margin is $1 plus a fee reserve; the order remains approximately $20 notional. Risk checks reserve pending entries by their selected margin requirement while portfolio/symbol exposure remains measured by full notional. Position leverage or margin-mode mismatches lock execution.
+
+Higher leverage brings liquidation closer. Entry configuration requires `stopLossPct × leverage < 80` as a conservative pre-entry buffer (for example, 20× with a 5% stop is rejected). The observed liquidation-proximity guard adapts to leverage, rather than immediately closing healthy high-leverage positions. These controls do not guarantee execution before liquidation during gaps or outages.
+
+Both Spot/custom strategies and AI strategies support **5m, 15m, 30m, 1h, 4h and 1d** candles. Daily candles use UTC boundaries (`D` on Bybit, `1Dutc` on OKX). AI context freshness, cache expiry and the next-candle display follow the selected interval. Software protective exits still run between candle evaluations. Shorter AI intervals consume more calls; the platform daily AI budget still applies.

@@ -1,3 +1,4 @@
+import { timeframeValue } from "../../../packages/trading/src/timeframes.ts";
 import { duration } from "../../../packages/trading/src/creator.ts";
 import { exchangeAdapter } from "../../../packages/exchanges/src/index.ts";
 import {
@@ -88,15 +89,8 @@ export async function marketContext(
   if (
     !marketInputSchema.safeParse(input).success ||
     Date.now() - input.candleTime >=
-      duration(
-        input.interval === "1h" ? "60" : input.interval.replace("m", ""),
-      ) *
-        2 ||
-    input.candleTime +
-      duration(
-        input.interval === "1h" ? "60" : input.interval.replace("m", ""),
-      ) >
-      Date.now()
+      duration(timeframeValue(input.interval)) * 2 ||
+    input.candleTime + duration(timeframeValue(input.interval)) > Date.now()
   )
     return {
       status: "FAILED",
@@ -195,19 +189,8 @@ export async function marketContext(
     const expiresAt =
       status === "VALID"
         ? Math.min(
-            input.candleTime +
-              duration(
-                input.interval === "1h"
-                  ? "60"
-                  : input.interval.replace("m", ""),
-              ) *
-                2,
-            createdAt +
-              duration(
-                input.interval === "1h"
-                  ? "60"
-                  : input.interval.replace("m", ""),
-              ),
+            input.candleTime + duration(timeframeValue(input.interval)) * 2,
+            createdAt + duration(timeframeValue(input.interval)),
           )
         : createdAt + 30000;
     await db.query(

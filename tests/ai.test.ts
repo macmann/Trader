@@ -415,9 +415,12 @@ test("AI Strategy provider requests validated trade decisions with a dedicated p
 
 test("market snapshots use the selected interval without incomplete candles or stale context", () => {
   for (const [timeframe, label] of [
+    ["5", "5m"],
     ["15", "15m"],
     ["30", "30m"],
     ["60", "1h"],
+    ["240", "4h"],
+    ["1440", "1d"],
   ]) {
     const ms = Number(timeframe) * 60000,
       now = Math.floor(Date.now() / ms) * ms + 1000;
