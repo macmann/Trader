@@ -1,6 +1,6 @@
 # Custom rules and AI Strategy
 
-Both modes currently execute Spot Testnet/Demo orders through the same tenant-scoped ledger, risk checks and execution service. Live execution remains disabled.
+Custom rules execute Spot Testnet/Demo orders. AI Strategy supports Spot and isolated 1× USDT perpetuals through tenant-scoped accounting and execution checks; see [futures setup](futures.md). Live execution remains disabled.
 
 ## Create indicator rules
 

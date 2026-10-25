@@ -15,6 +15,14 @@ const text = (v: unknown) =>
     .replaceAll("_", " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2");
 const descriptions: Record<string, string> = {
+  ISOLATED_MARGIN_REQUIRED:
+    "Futures requires isolated margin. Review the account margin mode at the exchange; this app does not switch account-wide modes.",
+  ONE_WAY_POSITION_MODE_REQUIRED:
+    "Futures requires one-way/net position mode. Review the contract position mode at the exchange before starting.",
+  FUTURES_ISOLATED_1X_REQUIRED:
+    "The exchange position must use isolated margin at 1× leverage for this release.",
+  UNEXPECTED_FUTURES_POSITION:
+    "The exchange contract position does not match this bot’s ledger. Existing manual positions are not adopted or sold by the bot.",
   RECONCILIATION_FAILED:
     "An older reconciliation failed without a detailed diagnostic. Review orders and exchange configuration; retry once to capture a new worker diagnostic rather than repeatedly pressing Start.",
   RECONCILIATION_REQUIRED:
@@ -318,8 +326,11 @@ export function BotMonitor({
           </div>
           <h2>{b.name}</h2>
           <p>
-            {b.symbol} · Spot ·{" "}
-            {b.timeframe === "60" ? "1h" : `${b.timeframe}m`} ·{" "}
+            {b.symbol} ·{" "}
+            {b.market_type === "LINEAR"
+              ? "USDT perpetual · 1× isolated"
+              : "Spot"}{" "}
+            · {b.timeframe === "60" ? "1h" : `${b.timeframe}m`} ·{" "}
             {b.strategy_version} · {b.connection_name}
           </p>
         </div>
@@ -422,7 +433,12 @@ export function BotMonitor({
         <>
           <div className="monitor-metrics">
             {[
-              ["Tracked Spot quantity", Number(p?.quantity ?? 0).toFixed(8)],
+              [
+                b.market_type === "LINEAR"
+                  ? `Futures base quantity · ${Number(p?.quantity) > 0 ? p?.position_direction : "Flat"}`
+                  : "Tracked Spot quantity",
+                Number(p?.quantity ?? 0).toFixed(8),
+              ],
               ["Average entry", money(summary.averageEntry)],
               [
                 "Last observed price",
@@ -432,7 +448,9 @@ export function BotMonitor({
               ],
               ["Unrealized P&L", money(summary.unrealizedPnl)],
               [
-                "Realized gross less all recorded fees",
+                b.market_type === "LINEAR"
+                  ? "Realized P&L incl. fees & funding"
+                  : "Realized gross less all recorded fees",
                 money(summary.realizedNetPnl),
               ],
               ["Bot equity estimate", money(summary.equity)],
@@ -463,44 +481,73 @@ export function BotMonitor({
           <p className="muted">
             Lifetime bot totals. Orders are requests; fills are actual recorded
             entries/exits. Closed cycles represent positions fully exited,
-            including recorded fees. Position is bot-attributed Spot inventory,
-            not your whole exchange account. Equity/unrealized P&L are
-            unavailable when the latest mark is stale. No pending-order reserve
-            is added to equity.
+            including recorded fees. Position is bot-attributed inventory or
+            contract exposure, not your whole exchange account.
+            Equity/unrealized P&L are unavailable when the latest mark is stale.
+            No pending-order reserve is added to equity.
           </p>
-          <section>
-            <h3>Account inventory isolation</h3>
-            <p className="muted">
-              Existing holdings are excluded from bot capital, positions and
-              P&amp;L. Bots sell only inventory recorded in their own ledger.
-            </p>
-            {snapshot.inventory ? (
-              <dl>
-                <dt>Asset</dt>
-                <dd>{snapshot.inventory.asset}</dd>
-                <dt>Non-bot holdings at enrollment</dt>
-                <dd>{snapshot.inventory.external_quantity}</dd>
-                <dt>All bots on this connection</dt>
-                <dd>{snapshot.inventory.managed_quantity}</dd>
-                <dt>Last reconciled account total</dt>
-                <dd>{snapshot.inventory.last_total}</dd>
-                <dt>Last inventory check</dt>
-                <dd>{when(snapshot.inventory.last_checked_at)}</dd>
-              </dl>
-            ) : (
+          {b.market_type === "SPOT" ? (
+            <>
+              <section>
+                <h3>Account inventory isolation</h3>
+                <p className="muted">
+                  Existing holdings are excluded from bot capital, positions and
+                  P&amp;L. Bots sell only inventory recorded in their own
+                  ledger.
+                </p>
+                {snapshot.inventory ? (
+                  <dl>
+                    <dt>Asset</dt>
+                    <dd>{snapshot.inventory.asset}</dd>
+                    <dt>Non-bot holdings at enrollment</dt>
+                    <dd>{snapshot.inventory.external_quantity}</dd>
+                    <dt>All bots on this connection</dt>
+                    <dd>{snapshot.inventory.managed_quantity}</dd>
+                    <dt>Last reconciled account total</dt>
+                    <dd>{snapshot.inventory.last_total}</dd>
+                    <dt>Last inventory check</dt>
+                    <dd>{when(snapshot.inventory.last_checked_at)}</dd>
+                  </dl>
+                ) : (
+                  <p>
+                    Inventory baseline will be captured during the first
+                    successful start checks.
+                  </p>
+                )}
+                {m?.error_snapshot?.inventory && (
+                  <p role="status">
+                    Last mismatch: expected{" "}
+                    {m.error_snapshot.inventory.expected}, exchange reported{" "}
+                    {m.error_snapshot.inventory.actual}{" "}
+                    {m.error_snapshot.inventory.asset}.
+                  </p>
+                )}
+              </section>
+            </>
+          ) : (
+            <section>
+              <h3>Futures position</h3>
               <p>
-                Inventory baseline will be captured during the first successful
-                start checks.
+                USDT linear perpetual · Isolated margin · 1× leverage ·
+                One-way/net mode
               </p>
-            )}
-            {m?.error_snapshot?.inventory && (
-              <p role="status">
-                Last mismatch: expected {m.error_snapshot.inventory.expected},
-                exchange reported {m.error_snapshot.inventory.actual}{" "}
-                {m.error_snapshot.inventory.asset}.
+              <p>
+                Direction:{" "}
+                {Number(p?.quantity) > 0 ? p.position_direction : "Flat"} ·
+                Funding received / paid: {money(p?.funding_total ?? 0)}
               </p>
-            )}
-          </section>
+              <p>
+                Exchange liquidation price (last observation):{" "}
+                {money(s.futures?.liquidationPrice)}
+              </p>
+              <p className="muted">
+                Position P&amp;L includes reconciled funding. Closed trade-cycle
+                statistics exclude funding, which is recorded separately.
+                Software protection needs a healthy worker; it is not an
+                exchange-native stop order.
+              </p>
+            </section>
+          )}
           <div className="monitor-grid">
             <section>
               <h3>Worker and market monitoring</h3>
@@ -519,7 +566,7 @@ export function BotMonitor({
                       ? "Ready at last check"
                       : "Not ready at last check"}
                 </dd>
-                <dt>Market event received</dt>
+                <dt>Market snapshot received</dt>
                 <dd>
                   {s.marketReceivedAt
                     ? when(s.marketReceivedAt)
@@ -707,7 +754,7 @@ export function BotMonitor({
             {tab === "fills"
               ? "Each row is an actual reconciled exchange fill. Partial fills stay separate; Buy is entry, Sell is exit. A fill may arrive after Stop and remains linked to its order’s run."
               : tab === "cycles"
-                ? "Net results of fully closed position cycles. Run filtering follows the closing order; a position may span runs."
+                ? "Net results of fully closed position cycles. Futures cycle statistics exclude funding; funding is included in equity and diagnostic exports. Run filtering follows the closing order; a position may span runs."
                 : tab === "runs"
                   ? "Runs track Start through Stop. Pause and retries keep the same open run. Monitoring adopted on an older active bot does not establish its original start time."
                   : tab === "activity" || tab === "ai"

@@ -201,7 +201,8 @@ export function TradingDesk({
             </div>
             <p className="muted">
               Stop the bot and resolve any open position or order before
-              changing configuration. Spot only; derivatives are unsupported.
+              changing configuration. Futures support AI Strategy with isolated
+              1× margin in Testnet/Demo.
             </p>
             <form
               key={
@@ -295,7 +296,7 @@ export function TradingDesk({
                   </label>
                 ))}
                 <label>
-                  Spot pair
+                  Trading pair
                   <select name="symbol" defaultValue={bot.symbol}>
                     {(
                       options?.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"]

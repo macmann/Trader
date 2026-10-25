@@ -23,7 +23,7 @@ export async function aiStrategy(
   tid: string,
   bot: any,
   candles: Candle[],
-  position: { quantity: number; cost: number },
+  position: { quantity: number; cost: number; direction?: string },
   now: number,
   providerOverride?: AIProvider,
 ) {
@@ -32,6 +32,9 @@ export async function aiStrategy(
     candleTime = candles.at(-1)!.time;
   const input = {
     symbol: bot.symbol,
+    marketType: bot.market_type ?? "SPOT",
+    leverage: 1,
+    marginMode: bot.market_type === "LINEAR" ? "ISOLATED" : null,
     interval: bot.timeframe,
     candleTime,
     price: candles.at(-1)!.close,
@@ -53,6 +56,7 @@ export async function aiStrategy(
     candles: candles.slice(-30),
     position: {
       quantity: position.quantity,
+      direction: position.direction ?? "LONG",
       averageEntry:
         position.quantity > 0 ? position.cost / position.quantity : null,
     },
@@ -115,6 +119,8 @@ export async function aiStrategy(
       );
       const parsed = aiTradeDecisionSchema.safeParse(output.value);
       if (!parsed.success) throw new AIError("AI_RESULT_INVALID");
+      if (bot.market_type !== "LINEAR" && parsed.data.action === "SELL_SHORT")
+        throw new AIError("AI_RESULT_INVALID");
       result = parsed.data;
       // Reject analysis that arrived after its decision window. Risk exits run independently.
       if (Date.now() >= candleTime + ms * 2)
@@ -133,7 +139,7 @@ export async function aiStrategy(
       error_code: error,
     };
     await db.query(
-      "INSERT INTO ai_strategy_decisions(id,tenant_id,bot_id,candle_time,provider,model,prompt_version,input,result,status,error_code,input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,'ai-trade-v1.0',$7,$8,$9,$10,$11,$12)",
+      "INSERT INTO ai_strategy_decisions(id,tenant_id,bot_id,candle_time,provider,model,prompt_version,input,result,status,error_code,input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,'ai-trade-v1.1',$7,$8,$9,$10,$11,$12)",
       [
         record.id,
         tid,
@@ -159,9 +165,14 @@ export async function aiStrategy(
       ? "LONG"
       : valid && record.result.action === "EXIT" && position.quantity > 0
         ? "EXIT"
-        : "NONE";
+        : valid &&
+            record.result.action === "SELL_SHORT" &&
+            bot.market_type === "LINEAR" &&
+            position.quantity === 0
+          ? "SHORT"
+          : "NONE";
   return {
-    direction: direction as "LONG" | "EXIT" | "NONE",
+    direction: direction as "LONG" | "SHORT" | "EXIT" | "NONE",
     reasons: [
       ...(record.status === "VALID" &&
       record.result?.confidence < configuration.minConfidence

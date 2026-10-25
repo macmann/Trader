@@ -372,7 +372,7 @@ test("real database auth, session protection, CSRF, tenant RLS and bot ownership
     await app.inject({ url: "/api/trading/options", headers: a.headers })
   ).json();
   assert.deepEqual(options.symbols, ["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
-  assert.equal(options.derivativesSupported, false);
+  assert.equal(options.derivativesSupported, true);
   assert.equal(
     (
       await app.inject({

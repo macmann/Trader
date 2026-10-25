@@ -79,11 +79,14 @@ async function applyFill(
   if (fee.gt(0) && (typeof fill.feeCurrency !== "string" || !fill.feeCurrency))
     throw Error("FEE_CURRENCY_REQUIRED");
   const currency = fill.feeCurrency ?? "USDT";
+  const futures = order.market_type === "LINEAR",
+    isEntry = futures ? order.purpose === "ENTRY" : order.side === "Buy";
+  if (futures && currency !== "USDT") throw Error("FUTURES_USDT_FEE_REQUIRED");
   if (!["USDT", base].includes(currency))
     throw Error("UNSUPPORTED_FEE_CURRENCY");
   const baseFee = currency === base ? fee : new Decimal(0),
     quoteFee = currency === base ? fee.mul(price) : fee;
-  const netQ = order.side === "Buy" ? q.minus(baseFee) : q.plus(baseFee);
+  const netQ = isEntry ? q.minus(baseFee) : q.plus(baseFee);
   if (netQ.lte(0)) throw Error("INVALID_NET_FILL");
   const inserted = await db.query(
     "INSERT INTO executions(id,tenant_id,order_id,quantity,price,fee,executed_at,fee_currency,fee_amount,net_quantity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO NOTHING RETURNING id",
@@ -97,7 +100,7 @@ async function applyFill(
       new Date(Number(fill.execTime)),
       currency,
       fee.toFixed(),
-      order.side === "Buy" ? netQ.toFixed() : netQ.neg().toFixed(),
+      isEntry ? netQ.toFixed() : netQ.neg().toFixed(),
     ],
   );
   if (!inserted.rowCount) {
@@ -138,7 +141,18 @@ async function applyFill(
     cost = new Decimal(p.cost),
     entryFees = new Decimal(p.entry_fees),
     cycleNet = new Decimal(p.cycle_net);
-  if (order.side === "Buy") {
+  if (isEntry) {
+    if (
+      futures &&
+      qty.gt(0) &&
+      p.position_direction !== order.position_direction
+    )
+      throw Error("FUTURES_DIRECTION_MISMATCH");
+    if (futures)
+      await db.query(
+        "UPDATE positions SET position_direction=$1 WHERE tenant_id=$2 AND bot_id=$3",
+        [order.position_direction, tid, order.bot_id],
+      );
     if (order.strategy_cycle !== p.strategy_cycle)
       throw Error("LATE_FILL_FROM_PREVIOUS_CYCLE");
     const first =
@@ -166,11 +180,16 @@ async function applyFill(
       ],
     );
   } else {
+    if (futures && p.position_direction !== order.position_direction)
+      throw Error("FUTURES_DIRECTION_MISMATCH");
     if (netQ.gt(qty)) throw Error("SELL_EXCEEDS_TRACKED_POSITION");
     const remaining = qty.minus(netQ),
       basis = netQ.eq(qty) ? cost : cost.mul(netQ).div(qty),
       allocatedFee = netQ.eq(qty) ? entryFees : entryFees.mul(netQ).div(qty),
-      gross = netQ.mul(price).minus(basis),
+      gross = netQ
+        .mul(price)
+        .minus(basis)
+        .mul(futures && p.position_direction === "SHORT" ? -1 : 1),
       net = gross.minus(quoteFee).minus(allocatedFee),
       cycle = cycleNet.plus(gross).minus(quoteFee);
     await db.query(
@@ -215,6 +234,8 @@ export async function reconcile(
   tid: string,
   connectionId: string,
   adapter: ExchangeAdapter,
+  marketType: "SPOT" | "LINEAR" = "SPOT",
+  symbol: string | null = null,
 ) {
   const connection = (
     await db.query(
@@ -222,14 +243,27 @@ export async function reconcile(
       [connectionId, tid],
     )
   ).rows[0];
+  const futureBot =
+    marketType === "LINEAR"
+      ? (
+          await db.query(
+            "SELECT futures_reconciled_at,futures_started_at FROM bots WHERE tenant_id=$1 AND connection_id=$2 AND symbol=$3 AND market_type='LINEAR'",
+            [tid, connectionId, symbol],
+          )
+        ).rows[0]
+      : null;
+  if (futureBot) {
+    connection.reconciled_at = futureBot.futures_reconciled_at;
+    connection.inventory_started_at = futureBot.futures_started_at;
+  }
   if (connection?.ledger_version !== 2) throw Error("LEDGER_REBUILD_REQUIRED");
   const now = Date.now(),
     since = connection?.reconciled_at?.getTime() ?? now - 6 * 86400000;
   if (now - since > 7 * 86400000) throw Error("RECONCILIATION_WINDOW_EXCEEDED");
   const ours = (
     await db.query(
-      "SELECT o.* FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE b.connection_id=$1 AND o.tenant_id=$2",
-      [connectionId, tid],
+      "SELECT o.* FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE b.connection_id=$1 AND o.tenant_id=$2 AND b.market_type=$3 AND ($4::text IS NULL OR b.symbol=$4)",
+      [connectionId, tid, marketType, symbol],
     )
   ).rows;
   const unfinished = ours.filter(
@@ -253,8 +287,8 @@ export async function reconcile(
   ]);
   const hasFills = !!(
     await db.query(
-      "SELECT 1 FROM executions e JOIN orders o ON o.id=e.order_id AND o.tenant_id=e.tenant_id JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE b.connection_id=$1 AND e.tenant_id=$2 LIMIT 1",
-      [connectionId, tid],
+      "SELECT 1 FROM executions e JOIN orders o ON o.id=e.order_id AND o.tenant_id=e.tenant_id JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE b.connection_id=$1 AND e.tenant_id=$2 AND b.market_type=$3 AND ($4::text IS NULL OR b.symbol=$4) LIMIT 1",
+      [connectionId, tid, marketType, symbol],
     )
   ).rowCount;
   const pristine =
@@ -386,7 +420,7 @@ export async function reconcile(
       { appliedQuantity: applied.toFixed() },
     );
   }
-  if (ready) {
+  if (ready && marketType === "SPOT") {
     const balances = await adapter.getBalances();
     for (const item of await managedAssets(db, tid, connectionId))
       await checkInventory(
@@ -403,7 +437,12 @@ export async function reconcile(
         [new Date(cutoff ?? now), tid, connectionId],
       );
   }
-  if (ready)
+  if (ready && marketType === "LINEAR")
+    await db.query(
+      "UPDATE bots SET futures_reconciled_at=$1,futures_started_at=COALESCE(futures_started_at,$1) WHERE tenant_id=$2 AND connection_id=$3 AND symbol=$4 AND market_type='LINEAR'",
+      [new Date(now), tid, connectionId, symbol],
+    );
+  if (ready && marketType === "SPOT")
     await db.query(
       "UPDATE exchange_connections SET reconciled_at=$1 WHERE tenant_id=$2 AND id=$3",
       [new Date(now), tid, connectionId],

@@ -5,7 +5,10 @@ export class PrivateFeedState {
   lastMessage = 0;
   revision = 0;
   private subscriptions = new Set<string>();
-  constructor(readonly provider: "BYBIT" | "BYBIT_EU_TESTNET" | "OKX") {}
+  constructor(
+    readonly provider: "BYBIT" | "BYBIT_EU_TESTNET" | "OKX",
+    readonly futures = false,
+  ) {}
   invalidate() {
     this.failed = true;
     this.authenticated = false;
@@ -21,6 +24,9 @@ export class PrivateFeedState {
       now >= this.lastMessage &&
       now - this.lastMessage < 45000
     );
+  }
+  futuresReady(now = Date.now()) {
+    return this.ready(now) && this.subscriptions.has("positions");
   }
   receive(
     raw: string,
@@ -53,6 +59,7 @@ export class PrivateFeedState {
             throw Error();
           this.subscriptions.add("orders");
           this.subscriptions.add("account");
+          if (this.futures) this.subscriptions.add("positions");
           this.lastMessage = now;
           return "ACK";
         }
@@ -66,7 +73,7 @@ export class PrivateFeedState {
           }
           return "IGNORE";
         }
-        if (["order", "execution", "wallet"].includes(m.topic)) {
+        if (["order", "execution", "wallet", "position"].includes(m.topic)) {
           if (!this.authenticated || !Array.isArray(m.data)) throw Error();
           this.revision++;
           this.lastMessage = now;
@@ -84,8 +91,13 @@ export class PrivateFeedState {
         if (m.event === "subscribe") {
           if (!this.authenticated || (m.code !== undefined && m.code !== "0"))
             throw Error();
-          if (m.arg?.channel === "orders" && m.arg.instType === "SPOT")
+          if (
+            m.arg?.channel === "orders" &&
+            ["SPOT", "SWAP", "ANY"].includes(m.arg.instType)
+          )
             this.subscriptions.add("orders");
+          else if (m.arg?.channel === "positions")
+            this.subscriptions.add("positions");
           else if (m.arg?.channel === "account")
             this.subscriptions.add("account");
           else throw Error();
@@ -93,7 +105,7 @@ export class PrivateFeedState {
           return "ACK";
         }
         if (
-          ["orders", "account"].includes(m.arg?.channel) &&
+          ["orders", "account", "positions"].includes(m.arg?.channel) &&
           m.data !== undefined
         ) {
           if (!this.authenticated || !Array.isArray(m.data)) throw Error();

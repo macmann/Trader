@@ -47,6 +47,8 @@ export async function dispatchIntent(
     )
   ).rows[0];
   if (!o || o.state !== "INTERNAL_CREATED") return false;
+  if (o.market_type === "LINEAR")
+    throw Error("FUTURES_INTENT_REQUIRES_FUTURES_EXECUTOR");
   const privateReady = () => runtime.isPrivateReady?.() ?? runtime.privateReady;
   const marketTime = () => runtime.marketTime?.() ?? runtime.marketReceivedAt;
   const now = runtime.now(),
