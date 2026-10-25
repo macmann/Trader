@@ -566,6 +566,12 @@ try {
     config: {},
   });
   assert.equal(spotLeverage.statusCode, 400);
+  const deletedFuture = await request(`/bots/${future.json().id}`, "DELETE");
+  assert.equal(deletedFuture.statusCode, 200, deletedFuture.body);
+  const replacementFuture = await request("/bots", "POST", futuresConfig);
+  assert.equal(replacementFuture.statusCode, 201, replacementFuture.body);
+  const historicalFuture = await request(`/bots/${future.json().id}/monitor`);
+  assert.equal(historicalFuture.json().bot.status, "ARCHIVED");
   const changes = (
     await admin.query(
       "SELECT data FROM audit_logs WHERE action='ADMIN_PLAN_CHANGED' ORDER BY id",

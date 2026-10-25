@@ -102,3 +102,5 @@ Platform administrators can manage customer subscriptions in **Admin Users**: se
 ### Futures Testnet/Demo
 
 New bots can select **USDT perpetual · Long / Short** with **AI Strategy** on Bybit Testnet or OKX Demo. This release uses isolated 1×–20× margin, one-way/net positions, protected market entries and reduce-only exits; capital limits remain full notional caps. The monitor and diagnostic exports include direction, funding and futures fills. Existing Spot bots retain their market. See [futures setup, constraints and acceptance checks](docs/futures.md). No new environment variables; Live futures remain disabled.
+
+To remove a bot, use **Bots → Delete bot → Confirm delete**. Flat, settled bots are archived and release their allocation/plan slot. Open positions and unresolved orders must be resolved first; Delete never liquidates positions. Enable **Show deleted bots** to review retained history and exports.

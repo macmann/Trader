@@ -1146,4 +1146,134 @@ test("strategy creator versions are immutable, tenant scoped and configurable on
     ).statusCode,
     400,
   );
+  const remove = (headers: any = a.headers) =>
+    app.inject({
+      method: "DELETE",
+      url: `/api/bots/${botId}`,
+      headers,
+    });
+  assert.equal((await remove(b.headers)).statusCode, 404);
+  assert.equal(
+    (
+      await app.inject({
+        method: "DELETE",
+        url: `/api/bots/${botId}`,
+        headers: { origin },
+      })
+    ).statusCode,
+    401,
+  );
+  assert.equal(
+    (await remove({ origin, cookie: a.headers.cookie })).statusCode,
+    403,
+  );
+  const held = await remove();
+  assert.equal(held.statusCode, 409);
+  assert.equal(held.json().error, "CLOSE_POSITION_BEFORE_DELETING_BOT");
+  await tenant(a.tid, async (db) => {
+    await db.query("UPDATE positions SET quantity=0,cost=0 WHERE bot_id=$1", [
+      botId,
+    ]);
+    await db.query("UPDATE subscriptions SET plan='FREE' WHERE tenant_id=$1", [
+      a.tid,
+    ]);
+  });
+  const createReplacement = () =>
+    app.inject({
+      method: "POST",
+      url: "/api/bots",
+      headers: a.headers,
+      payload: { name: "Replacement", connectionId: cid, config: {} },
+    });
+  assert.equal((await createReplacement()).json().error, "BOT_PLAN_LIMIT");
+  const orderId = randomUUID();
+  await tenant(a.tid, (db) =>
+    db.query(
+      "INSERT INTO orders(id,tenant_id,bot_id,client_id,exchange_id,side,quantity,state) VALUES($1,$2,$3,$4,'fixture-order','Buy',0.1,'SUBMITTED')",
+      [orderId, a.tid, botId, randomUUID()],
+    ),
+  );
+  const pending = await remove();
+  assert.equal(pending.statusCode, 409);
+  assert.equal(pending.json().error, "RESOLVE_ORDERS_BEFORE_DELETING_BOT");
+  await tenant(a.tid, (db) =>
+    db.query("UPDATE orders SET state='Cancelled' WHERE id=$1", [orderId]),
+  );
+  const stale = await remove();
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.json().error, "RECONCILE_BEFORE_DELETING_BOT");
+  await admin.query(
+    "UPDATE exchange_connections SET reconciled_at=now() WHERE id=$1",
+    [cid],
+  );
+  await admin.query(
+    "UPDATE orders SET updated_at=now()-interval '8 days' WHERE id=$1",
+    [orderId],
+  );
+  await admin.query(
+    "UPDATE exchange_connections SET status='DISCONNECTED',reconciled_at=now()-interval '7 days' WHERE id=$1",
+    [cid],
+  );
+  const deleted = await remove();
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.equal(deleted.json().status, "ARCHIVED");
+  assert.equal((await remove()).json().unchanged, true);
+  assert.equal(
+    (await app.inject({ url: "/api/bots", headers: a.headers }))
+      .json()
+      .some((b: any) => b.id === botId),
+    false,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: "/api/bots?includeDeleted=true",
+        headers: a.headers,
+      })
+    )
+      .json()
+      .find((b: any) => b.id === botId).status,
+    "ARCHIVED",
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: `/api/bots/${botId}/start`,
+        headers: a.headers,
+      })
+    ).statusCode,
+    409,
+  );
+  const retained = await app.inject({
+    url: `/api/bots/${botId}/diagnostics?hours=336`,
+    headers: a.headers,
+  });
+  assert.equal(retained.statusCode, 200, retained.body);
+  assert.equal(retained.json().history.signals.total, 501);
+  assert.equal(retained.json().history.orders.total, 1);
+  await admin.query(
+    "UPDATE exchange_connections SET status='CONNECTED' WHERE id=$1",
+    [cid],
+  );
+  const replacement = await createReplacement();
+  assert.equal(replacement.statusCode, 201, replacement.body);
+  assert.equal(
+    await tenant(
+      a.tid,
+      async (db) =>
+        (
+          await db.query(
+            "SELECT count(*)::int AS n FROM audit_logs WHERE action='BOT_DELETED' AND data->>'botId'=$1",
+            [botId],
+          )
+        ).rows[0].n,
+    ),
+    1,
+  );
+  await admin.query(
+    "UPDATE workspace_members SET role='VIEWER' WHERE tenant_id=$1 AND user_id=$2",
+    [a.tid, a.userId],
+  );
+  assert.equal((await remove()).statusCode, 403);
 });

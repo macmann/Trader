@@ -347,7 +347,9 @@ export function BotMonitor({
         <strong
           className={"status " + (b.status === "RUNNING" ? "running" : "")}
         >
-          {text(b.status)}
+          {b.status === "ARCHIVED"
+            ? "Deleted · history retained"
+            : text(b.status)}
         </strong>
         <span>
           Worker: {snapshot.workerFresh ? "recent check" : "stale / unknown"}
@@ -395,7 +397,13 @@ export function BotMonitor({
           response and may be stale.
         </p>
       )}
-      {reasons.length > 0 && (
+      {b.status === "ARCHIVED" && (
+        <p className="monitor-alert">
+          This bot is deleted. Its retained history is read-only and no
+          execution is scheduled.
+        </p>
+      )}
+      {b.status !== "ARCHIVED" && reasons.length > 0 && (
         <div className="monitor-alert" role="status">
           <h3>
             {b.status === "RISK_LOCKED"

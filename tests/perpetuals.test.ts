@@ -590,3 +590,39 @@ test("perpetual exchanges set and verify 20x, reject out-of-range leverage and m
   await okx.getCandles("BTCUSDT", "240");
   assert.equal(requests.at(-1).u.searchParams.get("bar"), "4H");
 });
+
+test("a deleted futures bot releases contract ownership without forgetting old fill identities", async (t) => {
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const old = await fixture();
+  old.action = "SELL_SHORT";
+  await run(old);
+  await run(old);
+  clock += 900000;
+  old.action = "EXIT";
+  old.broker.price = 99;
+  await run(old);
+  await run(old);
+  assert.equal(Number((await state(old)).position.quantity), 0);
+  const next = randomUUID();
+  await admin.query(
+    "UPDATE bots SET status='ARCHIVED',deleted_at=now(),futures_reconciled_at=now()-interval '8 days' WHERE id=$1",
+    [old.bid],
+  );
+  await tenant(old.tid, async (db) => {
+    await db.query(
+      "INSERT INTO bots(id,tenant_id,connection_id,name,strategy_version,market_type,config,ai_strategy_config,status) SELECT $1,tenant_id,connection_id,'Replacement','ai-v1.0','LINEAR',config,ai_strategy_config,'STARTING' FROM bots WHERE id=$2",
+      [next, old.bid],
+    );
+    await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [
+      next,
+      old.tid,
+    ]);
+  });
+  const replacement = { ...old, bid: next, action: "HOLD", calls: 0 };
+  await run(replacement);
+  await run(replacement);
+  assert.equal(old.broker.creates, 2);
+  assert.equal(Number((await state(replacement)).position.quantity), 0);
+  assert.equal((await state(old)).cycles.length, 1);
+});
