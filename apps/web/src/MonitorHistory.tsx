@@ -196,9 +196,23 @@ export function MonitorHistory({
               <tr key={row.id}>
                 <td data-label="Time / action">
                   <div className="history-cell-stack">
-                    <Badge value={row.side === "Buy" ? "BUY" : "SELL"} />
+                    <Badge
+                      value={
+                        row.market_type === "LINEAR"
+                          ? row.position_direction
+                          : row.side === "Buy"
+                            ? "BUY"
+                            : "SELL"
+                      }
+                    />
                     <strong>
-                      {row.side === "Buy" ? "Entry fill" : "Exit fill"}
+                      {(
+                        row.market_type === "LINEAR"
+                          ? row.purpose === "ENTRY"
+                          : row.side === "Buy"
+                      )
+                        ? "Entry fill"
+                        : "Exit fill"}
                     </strong>
                     <time>{monitorTime(row.executed_at)}</time>
                   </div>
@@ -227,13 +241,23 @@ export function MonitorHistory({
                 </td>
                 <td
                   data-label="Realized P&L"
-                  className={`history-number ${row.side === "Sell" && Number(row.realized_net) !== 0 ? (Number(row.realized_net) > 0 ? "history-profit" : "history-loss") : ""}`}
+                  className={`history-number ${(row.market_type === "LINEAR" ? row.purpose === "EXIT" : row.side === "Sell") && Number(row.realized_net) !== 0 ? (Number(row.realized_net) > 0 ? "history-profit" : "history-loss") : ""}`}
                 >
                   <strong>
-                    {row.side === "Buy" ? "—" : usd(row.realized_net)}
+                    {(
+                      row.market_type === "LINEAR"
+                        ? row.purpose === "ENTRY"
+                        : row.side === "Buy"
+                    )
+                      ? "—"
+                      : usd(row.realized_net)}
                   </strong>
                   <small>
-                    {row.side === "Buy"
+                    {(
+                      row.market_type === "LINEAR"
+                        ? row.purpose === "ENTRY"
+                        : row.side === "Buy"
+                    )
                       ? "Recorded on exit"
                       : "Net on this exit fill"}
                   </small>

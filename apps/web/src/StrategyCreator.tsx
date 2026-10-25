@@ -10,6 +10,7 @@ export function strategyFields(data: FormData) {
   const strategy = String(data.get("strategyVersion"));
   return {
     timeframe: data.get("timeframe"),
+    marketType: data.get("marketType") ?? "SPOT",
     customStrategyId:
       strategy === "custom-v1.0" ? data.get("customStrategyId") : null,
     ...(strategy === "ai-v1.0"
@@ -40,6 +41,7 @@ export function StrategyFields({
   const [strategy, setStrategy] = useState(
       bot?.strategy_version ?? "trend-v1.0",
     ),
+    [market, setMarket] = useState(bot?.market_type ?? "SPOT"),
     [customId, setCustomId] = useState(bot?.custom_strategy_id ?? ""),
     [model, setModel] = useState(bot?.ai_strategy_config?.model ?? ""),
     [templates, setTemplates] = useState<any[]>([]),
@@ -61,17 +63,43 @@ export function StrategyFields({
         </p>
       )}
       <label>
+        Market
+        <select
+          name="marketType"
+          value={market}
+          disabled={!!bot}
+          onChange={(e) => {
+            setMarket(e.target.value);
+            if (e.target.value === "LINEAR") setStrategy("ai-v1.0");
+          }}
+        >
+          <option value="SPOT">Spot</option>
+          <option value="LINEAR">USDT perpetual · Long / Short</option>
+        </select>
+        {bot && <input type="hidden" name="marketType" value={market} />}
+      </label>
+      {market === "LINEAR" && (
+        <p className="muted">
+          Testnet/Demo only · AI Strategy · Isolated margin · 1× leverage ·
+          Market entries and reduce-only exits. Use one-way/net position mode.
+          One bot owns each exchange contract; existing manual futures positions
+          cannot be adopted.
+        </p>
+      )}
+      <label>
         Strategy
         <select
           name="strategyVersion"
           value={strategy}
           onChange={(e) => setStrategy(e.target.value)}
         >
-          {strategies.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name} · {s.id}
-            </option>
-          ))}
+          {strategies
+            .filter((s) => market !== "LINEAR" || s.id === "ai-v1.0")
+            .map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} · {s.id}
+              </option>
+            ))}
         </select>
       </label>
       <label>
@@ -133,9 +161,13 @@ export function StrategyFields({
             />
           </label>
           <p className="muted">
-            AI proposes Buy, Hold or Exit once per completed candle. Risk limits
-            and stop-loss checks remain active between candles. Invalid or
-            unavailable AI holds the position under existing risk protection.{" "}
+            AI proposes{" "}
+            {market === "LINEAR"
+              ? "Long, Short, Hold or Exit"
+              : "Buy, Hold or Exit"}{" "}
+            once per completed candle. Risk limits and stop-loss checks remain
+            active between candles. Invalid or unavailable AI holds the position
+            under existing risk protection.{" "}
             {models &&
               !models.configured &&
               "Configure the AI provider and key in Admin Settings before using AI Strategy."}

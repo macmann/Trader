@@ -10,6 +10,8 @@ import {
 } from "../apps/api/src/platform.ts";
 import {
   runtimeConfiguration,
+  sealSettings,
+  savedSettings,
   runtimeProvider,
   testnetExecutionEnabled,
 } from "../apps/api/src/installation.ts";
@@ -493,6 +495,45 @@ try {
     });
     assert.equal(created.statusCode, 201, created.body);
   }
+  await admin.query(
+    "UPDATE platform_settings SET encrypted_value=$1 WHERE singleton",
+    [
+      sealSettings({
+        ...(await savedSettings(admin)),
+        AI_PROVIDER: "openai",
+        AI_MODEL: "gpt-4.1-mini",
+        AI_API_KEY: "fixture-futures-key",
+      }),
+    ],
+  );
+  const futuresConfig = {
+    name: "Owner futures",
+    connectionId: connection,
+    marketType: "LINEAR",
+    strategyVersion: "ai-v1.0",
+    aiStrategyConfig: { model: "gpt-4.1-mini", minConfidence: 70 },
+    config: { capital: 100, maxTrade: 20 },
+  };
+  const future = await request("/bots", "POST", futuresConfig);
+  assert.equal(future.statusCode, 201, future.body);
+  const duplicate = await request("/bots", "POST", futuresConfig);
+  assert.equal(duplicate.statusCode, 409, duplicate.body);
+  assert.equal(duplicate.json().error, "FUTURES_CONTRACT_ALREADY_ASSIGNED");
+  const wrongStrategy = await request("/bots", "POST", {
+    ...futuresConfig,
+    symbol: "ETHUSDT",
+    strategyVersion: "trend-v1.0",
+  });
+  assert.equal(wrongStrategy.statusCode, 400);
+  const immutableMarket = await request(
+    `/bots/${future.json().id}/config`,
+    "PATCH",
+    { marketType: "SPOT" },
+  );
+  assert.equal(immutableMarket.statusCode, 400);
+  const futureMonitor = await request(`/bots/${future.json().id}/monitor`);
+  assert.equal(futureMonitor.statusCode, 200, futureMonitor.body);
+  assert.equal(futureMonitor.json().bot.market_type, "LINEAR");
   const changes = (
     await admin.query(
       "SELECT data FROM audit_logs WHERE action='ADMIN_PLAN_CHANGED' ORDER BY id",

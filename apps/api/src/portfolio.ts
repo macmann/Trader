@@ -33,7 +33,7 @@ export async function portfolioSnapshot(db: pg.PoolClient, tenantId: string) {
   ).rows;
   const pending = (
     await db.query(
-      "SELECT o.bot_id,o.side,o.requested_notional,b.connection_id,o.symbol FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE o.tenant_id=$1 AND NOT (o.state=ANY($2::text[]))",
+      "SELECT o.bot_id,CASE WHEN o.market_type='LINEAR' AND o.purpose='ENTRY' THEN 'Buy' WHEN o.market_type='LINEAR' THEN 'Sell' ELSE o.side END AS side,o.requested_notional,b.connection_id,o.symbol FROM orders o JOIN bots b ON b.id=o.bot_id AND b.tenant_id=o.tenant_id WHERE o.tenant_id=$1 AND NOT (o.state=ANY($2::text[]))",
       [tenantId, terminalStates],
     )
   ).rows;

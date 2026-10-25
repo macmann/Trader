@@ -98,3 +98,7 @@ Use **Strategies** to save versioned RSI, EMA, MA, price and volume rules for en
 To investigate a bot that has not traded, open its monitor → **Diagnostics & export**. Download the readable report or JSON logs and share the file for review. Reports include strategy/risk/AI decisions, transactions and worker history, with credential redaction and explicit history limits. New indicator diagnostics and retained worker events begin after migration 011 is deployed. No new environment variables are required.
 
 Platform administrators can manage customer subscriptions in **Admin Users**: search accounts, review workspace usage, assign FREE/BASIC/PRO or restore billing/default, with administrator password confirmation and audit records. The first setup administrator's personal workspace automatically has protected **UNLIMITED** subscription allowances after migration 012. Trading risk controls and the platform AI spending budget remain in force. See [admin accounts and plans](docs/admin-users.md).
+
+### Futures Testnet/Demo
+
+New bots can select **USDT perpetual · Long / Short** with **AI Strategy** on Bybit Testnet or OKX Demo. This release uses isolated 1× margin, one-way/net positions, protected market entries and reduce-only exits; capital limits remain full notional caps. The monitor and diagnostic exports include direction, funding and futures fills. Existing Spot bots retain their market. See [futures setup, constraints and acceptance checks](docs/futures.md). No new environment variables; Live futures remain disabled.

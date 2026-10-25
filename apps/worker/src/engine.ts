@@ -1,3 +1,8 @@
+import {
+  PerpetualExchange,
+  type PerpetualAdapter,
+} from "../../../packages/exchanges/src/perpetuals.ts";
+import { perpetualTick } from "./perpetuals.ts";
 import { marketDiagnostics } from "../../../packages/trading/src/diagnostics.ts";
 import { aiStrategy } from "./ai-strategy.ts";
 import {
@@ -78,6 +83,7 @@ const feeds = new Map<
     socket: WebSocket;
     state: PrivateFeedState;
     provider: string;
+    connectionId: string;
   }
 >();
 const market = new Map<string, number>();
@@ -164,8 +170,10 @@ function privateFeed(
   id: string,
   credentials: ExchangeCredentials,
   provider = "BYBIT",
+  marketType = "SPOT",
 ) {
-  let feed = feeds.get(id);
+  const feedKey = id + ":" + marketType;
+  let feed = feeds.get(feedKey);
   if (feed) return feed;
   const socket = new WebSocket(
     provider === "OKX"
@@ -177,10 +185,12 @@ function privateFeed(
     socket,
     state: new PrivateFeedState(
       provider as "BYBIT" | "BYBIT_EU_TESTNET" | "OKX",
+      marketType === "LINEAR",
     ),
     provider,
+    connectionId: id,
   };
-  feeds.set(id, feed);
+  feeds.set(feedKey, feed);
   const current = feed;
   socket.on("open", () => {
     if (provider === "OKX") {
@@ -225,14 +235,25 @@ function privateFeed(
             ? {
                 op: "subscribe",
                 args: [
-                  { channel: "orders", instType: "SPOT" },
+                  {
+                    channel: "orders",
+                    instType: marketType === "LINEAR" ? "SWAP" : "SPOT",
+                  },
+                  ...(marketType === "LINEAR"
+                    ? [{ channel: "positions", instType: "SWAP" }]
+                    : []),
                   { channel: "account" },
                 ],
               }
             : {
                 op: "subscribe",
                 req_id: "private-subscriptions",
-                args: ["order", "execution", "wallet"],
+                args: [
+                  "order",
+                  "execution",
+                  "wallet",
+                  ...(marketType === "LINEAR" ? ["position"] : []),
+                ],
               },
         ),
       );
@@ -244,7 +265,7 @@ function privateFeed(
   });
   socket.on("close", () => {
     current.state.invalidate();
-    if (feeds.get(id) === current) feeds.delete(id);
+    if (feeds.get(feedKey) === current) feeds.delete(feedKey);
   });
   return current;
 }
@@ -295,15 +316,25 @@ export async function tick(
         return;
       const adapter =
         override?.adapter ??
-        exchangeAdapter(
-          row.provider,
-          "TESTNET",
-          decrypt<ExchangeCredentials>(
-            row.credentials,
-            key,
-            `${tid}:${row.connection_id}:${row.environment}`,
-          ),
-        );
+        (row.market_type === "LINEAR"
+          ? new PerpetualExchange(
+              row.provider,
+              row.symbol,
+              decrypt<ExchangeCredentials>(
+                row.credentials,
+                key,
+                `${tid}:${row.connection_id}:${row.environment}`,
+              ),
+            )
+          : exchangeAdapter(
+              row.provider,
+              "TESTNET",
+              decrypt<ExchangeCredentials>(
+                row.credentials,
+                key,
+                `${tid}:${row.connection_id}:${row.environment}`,
+              ),
+            ));
       const feed = override
         ? null
         : privateFeed(
@@ -314,6 +345,7 @@ export async function tick(
               `${tid}:${row.connection_id}:${row.environment}`,
             ),
             row.provider,
+            row.market_type,
           );
       const accountRevision = feed?.state.revision;
       const runtime: ExecutionRuntime = {
@@ -326,8 +358,10 @@ export async function tick(
             : () => testnetExecutionEnabled(db)),
         privateReady:
           override?.privateReady ??
-          (!!feed?.state.ready(clock()) &&
-            feed.socket.readyState === WebSocket.OPEN),
+          (!!(row.market_type === "LINEAR"
+            ? feed?.state.futuresReady(clock())
+            : feed?.state.ready(clock())) &&
+            feed?.socket.readyState === WebSocket.OPEN),
         marketReceivedAt:
           override?.marketReceivedAt ??
           market.get(row.provider + ":" + row.symbol) ??
@@ -336,15 +370,30 @@ export async function tick(
         isPrivateReady: () =>
           override
             ? override.privateReady
-            : !!feed?.state.ready(clock()) &&
-              feed.socket.readyState === WebSocket.OPEN &&
-              feed.state.revision === accountRevision,
+            : !!(row.market_type === "LINEAR"
+                ? feed?.state.futuresReady(clock())
+                : feed?.state.ready(clock())) &&
+              feed?.socket.readyState === WebSocket.OPEN &&
+              (row.market_type === "LINEAR" ||
+                feed?.state.revision === accountRevision),
         marketTime: () =>
           override?.marketReceivedAt ??
           market.get(row.provider + ":" + row.symbol) ??
           0,
         afterSubmitting: override?.afterSubmitting,
       };
+      if (row.market_type === "LINEAR") {
+        await perpetualTick(
+          db,
+          tid,
+          row,
+          adapter as PerpetualAdapter,
+          runtime,
+          observe,
+          override?.aiProvider,
+        );
+        return;
+      }
       const hasOrders = (
         await db.query(
           "SELECT 1 FROM orders WHERE bot_id=$1 AND tenant_id=$2 LIMIT 1",
@@ -628,7 +677,13 @@ export async function tick(
             { quantity: Number(p.quantity), cost: Number(p.cost) },
             now,
             override?.aiProvider,
-          );
+          ).then((result) => ({
+            ...result,
+            direction:
+              result.direction === "SHORT"
+                ? ("NONE" as const)
+                : result.direction,
+          }));
       }
       const balance = await adapter.getBalances(),
         coins = balance.list?.[0]?.coin ?? [],
@@ -1029,7 +1084,7 @@ export async function startWorker() {
         mode: 0o600,
       });
       for (const [id, f] of feeds)
-        if (!active.has(id)) {
+        if (!active.has(f.connectionId)) {
           f.socket.close();
           feeds.delete(id);
         }

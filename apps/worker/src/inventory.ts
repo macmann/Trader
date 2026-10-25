@@ -40,7 +40,7 @@ export async function managedAssets(
 ) {
   return (
     await db.query(
-      "SELECT replace(b.symbol,'USDT','') AS asset,COALESCE(sum(p.quantity),0) AS quantity FROM bots b LEFT JOIN positions p ON p.bot_id=b.id AND p.tenant_id=b.tenant_id WHERE b.connection_id=$1 AND b.tenant_id=$2 GROUP BY b.symbol",
+      "SELECT replace(b.symbol,'USDT','') AS asset,COALESCE(sum(p.quantity),0) AS quantity FROM bots b LEFT JOIN positions p ON p.bot_id=b.id AND p.tenant_id=b.tenant_id WHERE b.connection_id=$1 AND b.tenant_id=$2 AND b.market_type='SPOT' GROUP BY b.symbol",
       [connectionId, tid],
     )
   ).rows;

@@ -27,9 +27,9 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
   app.get("/api/trading/options", async () => ({
     symbols,
     strategies,
-    marketTypes: ["SPOT"],
+    marketTypes: ["SPOT", "LINEAR"],
     timeframes: ["15m", "30m", "1h"],
-    derivativesSupported: false,
+    derivativesSupported: true,
     advancedExecutionSupported: true,
     executionEnabled: await testnetExecutionEnabled(),
   }));
@@ -79,6 +79,7 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
           symbol: symbolSchema.optional(),
           strategyVersion: strategySchema.optional(),
           timeframe: timeframeSchema.optional(),
+          marketType: z.enum(["SPOT", "LINEAR"]).optional(),
           customStrategyId: z.uuid().nullable().optional(),
           aiStrategyConfig: aiStrategyConfig.optional(),
           config: botConfig.optional(),
@@ -112,6 +113,10 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
         return reply
           .code(409)
           .send({ error: "OPEN_EXPOSURE_PREVENTS_CONFIGURATION_CHANGE" });
+      if (v.marketType && v.marketType !== bot.market_type)
+        return reply
+          .code(400)
+          .send({ error: "CREATE_NEW_BOT_TO_CHANGE_MARKET" });
       const config = v.config ?? botConfig.parse(bot.config),
         advanced =
           v.advancedConfig ?? advancedConfig.parse(bot.advanced_config),
@@ -127,6 +132,17 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(400).send({ error: (e as Error).message });
       }
+      if (
+        bot.market_type === "LINEAR" &&
+        (strategy !== "ai-v1.0" ||
+          advanced.entryType !== "MARKET" ||
+          advanced.sizing !== "FIXED" ||
+          advanced.trailingStopPct > 0 ||
+          advanced.breakEvenTriggerPct > 0)
+      )
+        return reply
+          .code(400)
+          .send({ error: "FUTURES_AI_MARKET_STRATEGY_REQUIRED" });
       const invalid = configurationVeto(strategy, advanced);
       if (invalid) return reply.code(400).send({ error: invalid });
       snapshot.allocated -= Number(bot.config.capital);
@@ -222,11 +238,9 @@ export function registerAdvancedRoutes(app: FastifyInstance) {
       ).rows[0];
       if (!b) return reply.code(404).send({ error: "NOT_FOUND" });
       if (["custom-v1.0", "ai-v1.0"].includes(b.strategy_version))
-        return reply
-          .code(400)
-          .send({
-            error: "USE_BOT_MONITOR_FOR_CUSTOM_OR_AI_STRATEGY_DECISIONS",
-          });
+        return reply.code(400).send({
+          error: "USE_BOT_MONITOR_FOR_CUSTOM_OR_AI_STRATEGY_DECISIONS",
+        });
       const snapshot = await portfolioSnapshot(db, tid),
         config = botConfig.parse(b.config),
         advanced = advancedConfig.parse(b.advanced_config),

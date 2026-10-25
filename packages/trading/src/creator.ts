@@ -148,7 +148,7 @@ export const aiStrategyConfig = z.strictObject({
   minConfidence: z.number().int().min(0).max(100).default(70),
 });
 export const aiTradeDecisionSchema = z.strictObject({
-  action: z.enum(["BUY", "HOLD", "EXIT"]),
+  action: z.enum(["BUY", "SELL_SHORT", "HOLD", "EXIT"]),
   confidence: z.number().int().min(0).max(100),
   reasons: z.array(z.string().min(1).max(500)).min(1).max(8),
 });

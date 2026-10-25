@@ -569,7 +569,7 @@ app.get("/api/bots", async (req) =>
     async (db) =>
       (
         await db.query(
-          "SELECT b.*,c.environment,c.status AS connection_status,p.quantity,p.cost,p.realized_pnl,p.fees FROM bots b JOIN exchange_connections c ON c.id=b.connection_id LEFT JOIN positions p ON p.bot_id=b.id WHERE b.tenant_id=$1 ORDER BY b.created_at DESC",
+          "SELECT b.*,c.environment,c.status AS connection_status,p.quantity,p.cost,p.realized_pnl,p.fees,p.position_direction,p.funding_total FROM bots b JOIN exchange_connections c ON c.id=b.connection_id LEFT JOIN positions p ON p.bot_id=b.id WHERE b.tenant_id=$1 ORDER BY b.created_at DESC",
           [req.identity!.tenantId],
         )
       ).rows,
@@ -585,6 +585,7 @@ app.post("/api/bots", async (req, reply) => {
         symbol: symbolSchema.default("BTCUSDT"),
         strategyVersion: strategySchema.default("trend-v1.0"),
         timeframe: timeframeSchema.default("15"),
+        marketType: z.enum(["SPOT", "LINEAR"]).default("SPOT"),
         customStrategyId: z.uuid().nullable().default(null),
         aiStrategyConfig: aiStrategyConfig.optional(),
         advancedConfig: advancedConfig.default(() => advancedConfig.parse({})),
@@ -632,6 +633,29 @@ app.post("/api/bots", async (req, reply) => {
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+    if (
+      v.marketType === "LINEAR" &&
+      (v.strategyVersion !== "ai-v1.0" ||
+        v.advancedConfig.entryType !== "MARKET" ||
+        v.advancedConfig.sizing !== "FIXED" ||
+        v.advancedConfig.trailingStopPct > 0 ||
+        v.advancedConfig.breakEvenTriggerPct > 0)
+    )
+      return reply
+        .code(400)
+        .send({ error: "FUTURES_AI_MARKET_STRATEGY_REQUIRED" });
+    if (
+      v.marketType === "LINEAR" &&
+      (
+        await db.query(
+          "SELECT 1 FROM bots WHERE tenant_id=$1 AND connection_id=$2 AND symbol=$3 AND market_type='LINEAR'",
+          [tid, v.connectionId, v.symbol],
+        )
+      ).rowCount
+    )
+      return reply
+        .code(409)
+        .send({ error: "FUTURES_CONTRACT_ALREADY_ASSIGNED" });
     const invalid = configurationVeto(v.strategyVersion, v.advancedConfig);
     if (invalid) return reply.code(400).send({ error: invalid });
     const reasons = allocationReasons(
@@ -653,7 +677,7 @@ app.post("/api/bots", async (req, reply) => {
         .code(400)
         .send({ error: "CONNECTED_TESTNET_EXCHANGE_REQUIRED" });
     await db.query(
-      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id,timeframe,custom_strategy_id,ai_strategy_config) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+      "INSERT INTO bots(id,tenant_id,connection_id,name,config,symbol,strategy_version,advanced_config,marketplace_version_id,timeframe,custom_strategy_id,ai_strategy_config,market_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
       [
         id,
         tid,
@@ -667,6 +691,7 @@ app.post("/api/bots", async (req, reply) => {
         v.timeframe,
         v.customStrategyId,
         JSON.stringify(v.aiStrategyConfig ?? {}),
+        v.marketType,
       ],
     );
     await db.query("INSERT INTO positions(bot_id,tenant_id) VALUES($1,$2)", [

@@ -88,3 +88,44 @@ test("EU Testnet private events use Bybit authentication and subscription readin
   s.invalidate();
   assert.equal(s.ready(1004), false);
 });
+
+test("futures readiness requires positions subscriptions and handles position changes", () => {
+  const state = new PrivateFeedState("OKX");
+  state.receive(msg({ event: "login", code: "0" }), 1000);
+  state.receive(
+    msg({ event: "subscribe", arg: { channel: "orders", instType: "ANY" } }),
+    1000,
+  );
+  state.receive(msg({ event: "subscribe", arg: { channel: "account" } }), 1000);
+  assert.equal(state.ready(1000), true);
+  assert.equal(state.futuresReady(1000), false);
+  state.receive(
+    msg({ event: "subscribe", arg: { channel: "positions", instType: "ANY" } }),
+    1000,
+  );
+  assert.equal(state.futuresReady(1000), true);
+  const rev = state.revision;
+  state.receive(
+    msg({
+      arg: { channel: "positions" },
+      data: [{ instId: "BTC-USDT-SWAP", pos: "1" }],
+    }),
+    1001,
+  );
+  assert.ok(state.revision > rev);
+  state.invalidate();
+  assert.equal(state.futuresReady(1001), false);
+});
+
+test("Spot Bybit readiness does not depend on derivatives permissions", () => {
+  const spot = bybit(1000);
+  assert.equal(spot.ready(1000), true);
+  assert.equal(spot.futuresReady(1000), false);
+  const future = new PrivateFeedState("BYBIT", true);
+  future.receive(msg({ op: "auth", success: true }), 1000);
+  future.receive(
+    msg({ op: "subscribe", success: true, req_id: "private-subscriptions" }),
+    1000,
+  );
+  assert.equal(future.futuresReady(1000), true);
+});

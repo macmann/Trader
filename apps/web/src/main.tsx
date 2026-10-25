@@ -22,6 +22,9 @@ type Bot = {
   symbol: string;
   strategy_version: string;
   timeframe: string;
+  market_type: string;
+  position_direction?: string;
+  funding_total?: string;
   advanced_config: any;
   ai_mode?: string;
   ai_strategy_config?: { model: string };
@@ -394,7 +397,11 @@ function App() {
   const active = bots.filter((b) => b.status === "RUNNING").length,
     allocation = bots.reduce((n, b) => n + b.config.capital, 0),
     pnl = bots.reduce(
-      (n, b) => n + Number(b.realized_pnl ?? 0) - Number(b.fees ?? 0),
+      (n, b) =>
+        n +
+        Number(b.realized_pnl ?? 0) +
+        Number(b.funding_total ?? 0) -
+        Number(b.fees ?? 0),
       0,
     );
   return (
@@ -602,9 +609,12 @@ function App() {
                           </div>
                           <h2>{b.name}</h2>
                           <p className="muted">
-                            {b.symbol} · Spot ·{" "}
-                            {b.timeframe === "60" ? "1h" : `${b.timeframe}m`} ·{" "}
-                            {b.strategy_version}
+                            {b.symbol} ·{" "}
+                            {b.market_type === "LINEAR"
+                              ? `Perpetual · ${b.position_direction ?? "Flat"}`
+                              : "Spot"}{" "}
+                            · {b.timeframe === "60" ? "1h" : `${b.timeframe}m`}{" "}
+                            · {b.strategy_version}
                           </p>
                           <span
                             className={
@@ -623,7 +633,8 @@ function App() {
                               <small>Realized net P&L</small>
                               <strong>
                                 {money(
-                                  Number(b.realized_pnl ?? 0) -
+                                  Number(b.realized_pnl ?? 0) +
+                                    Number(b.funding_total ?? 0) -
                                     Number(b.fees ?? 0),
                                 )}
                               </strong>
@@ -1090,8 +1101,8 @@ function App() {
                   ))}
                 </div>
                 <p className="muted">
-                  Selected pair · Spot · 15 minutes · Versioned strategy · AI
-                  off
+                  Selected market · Selected candle interval · Versioned
+                  strategy · AI off
                   <br />
                   10 trades/day · 10% drawdown limit · One open position
                 </p>

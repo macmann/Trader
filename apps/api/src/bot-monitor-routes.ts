@@ -27,7 +27,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
     return tenant(tid, async (db) => {
       const bot = (
         await db.query(
-          "SELECT b.id,b.name,b.status,b.symbol,b.timeframe,b.strategy_version,b.config,b.custom_strategy_id,b.ai_strategy_config,b.advanced_config,b.ai_mode,b.last_candle,b.created_at,c.id AS connection_id,c.name AS connection_name,c.provider,c.environment,c.status AS connection_status,c.last_verified_at,c.reconciled_at,c.ledger_version FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
+          "SELECT b.id,b.name,b.status,b.symbol,b.timeframe,b.market_type,b.strategy_version,b.config,b.custom_strategy_id,b.ai_strategy_config,b.advanced_config,b.ai_mode,b.last_candle,b.created_at,c.id AS connection_id,c.name AS connection_name,c.provider,c.environment,c.status AS connection_status,c.last_verified_at,CASE WHEN b.market_type='LINEAR' THEN b.futures_reconciled_at ELSE c.reconciled_at END AS reconciled_at,c.ledger_version FROM bots b JOIN exchange_connections c ON c.id=b.connection_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.tenant_id=$2",
           [id, tid],
         )
       ).rows[0];
@@ -118,10 +118,16 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
           quantity === 0
             ? 0
             : priceFresh
-              ? quantity * Number(monitor.price) - cost
+              ? (quantity * Number(monitor.price) - cost) *
+                (bot.market_type === "LINEAR" &&
+                position?.position_direction === "SHORT"
+                  ? -1
+                  : 1)
               : null;
       const realized =
-        Number(position?.realized_pnl ?? 0) - Number(position?.fees ?? 0);
+        Number(position?.realized_pnl ?? 0) +
+        Number(position?.funding_total ?? 0) -
+        Number(position?.fees ?? 0);
       const blockers = [
         ...(!executionEnabled ? ["EXECUTION_DISABLED"] : []),
         ...(globalStop ? ["GLOBAL_EXECUTION_STOP"] : []),
@@ -223,7 +229,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         orders: {
           from: "orders o",
           columns:
-            "o.id,o.client_id,o.exchange_id,o.side,o.quantity,o.state,o.symbol,o.order_type,o.limit_price,o.created_at,o.updated_at,o.run_id",
+            "o.id,o.client_id,o.exchange_id,o.side,o.quantity,o.state,o.symbol,o.order_type,o.limit_price,o.created_at,o.updated_at,o.run_id,o.market_type,o.purpose,o.position_direction",
           time: "o.created_at",
           id: "o.id",
           run: "o.run_id",
@@ -232,7 +238,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         fills: {
           from: "executions e JOIN orders o ON o.id=e.order_id AND o.tenant_id=e.tenant_id",
           columns:
-            "e.id,e.order_id,e.quantity,e.price,e.fee,e.fee_currency,e.fee_amount,e.realized_gross,e.realized_net,e.executed_at,o.side,o.symbol,o.run_id,o.strategy_version",
+            "e.id,e.order_id,e.quantity,e.price,e.fee,e.fee_currency,e.fee_amount,e.realized_gross,e.realized_net,e.executed_at,o.side,o.symbol,o.run_id,o.strategy_version,o.market_type,o.purpose,o.position_direction",
           time: "e.executed_at",
           id: "e.id",
           run: "o.run_id",

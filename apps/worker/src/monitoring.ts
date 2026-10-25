@@ -13,6 +13,12 @@ export type BotObservation = {
   exchangeCode?: number;
   candleTime?: number;
   inventory?: InventoryError["details"];
+  futures?: {
+    leverage: number;
+    marginMode: string;
+    positionDirection: string;
+    liquidationPrice: number | null;
+  };
   protection?: {
     stopPrice: number;
     takeProfitPrice: number;
@@ -24,6 +30,21 @@ export type BotObservation = {
 export function failureObservation(error: unknown): BotObservation {
   const known = [
     "UNEXPECTED_ACCOUNT_POSITION",
+    "UNEXPECTED_FUTURES_POSITION",
+    "FUTURES_ISOLATED_1X_REQUIRED",
+    "ONE_WAY_POSITION_MODE_REQUIRED",
+    "ISOLATED_MARGIN_REQUIRED",
+    "FUTURES_ENTRY_PRICE_MISMATCH",
+    "FUTURES_DIRECTION_MISMATCH",
+    "FUNDING_EVENT_INVALID",
+    "FUNDING_PAGINATION_INVALID",
+    "FUNDING_PAGINATION_LIMIT",
+    "UNSUPPORTED_FUTURES_CONTRACT",
+    "INVALID_CONTRACT_SIZE",
+    "FUTURES_USDT_FEE_REQUIRED",
+    "FUNDING_EVENT_CONFLICT",
+    "STALE_FUTURES_MARKET",
+    "FUTURES_REDUCE_ONLY_REQUIRED",
     "ACCOUNT_BALANCE_INVALID",
     "ACCOUNT_POSITION_INVALID",
     "INVENTORY_BASELINE_REVIEW_REQUIRED",
