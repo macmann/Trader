@@ -294,14 +294,42 @@ export class PerpetualExchange implements PerpetualAdapter {
         symbol: this.symbol,
         orderLinkId: client,
       });
-    return {
-      list: (
-        await this.okx.request("/api/v5/trade/order", {
-          instId: this.inst,
-          clOrdId: client,
-        })
-      ).map((v) => this.normalize(v)),
-    };
+    try {
+      return {
+        list: (
+          await this.okx.request("/api/v5/trade/order", {
+            instId: this.inst,
+            clOrdId: client,
+          })
+        ).map((v) => this.normalize(v)),
+      };
+    } catch (error) {
+      if (!(error instanceof ExchangeError) || error.code !== 51603)
+        throw error;
+      // Check recent and archived terminal orders before reporting absence.
+      for (const path of [
+        "/api/v5/trade/orders-history",
+        "/api/v5/trade/orders-history-archive",
+      ]) {
+        let after: string | undefined;
+        for (let page = 0; page < 100; page++) {
+          const rows = await this.okx.request(path, {
+            instType: "SWAP",
+            instId: this.inst,
+            limit: 100,
+            ...(after ? { after } : {}),
+          });
+          const found = rows.find((v) => v.clOrdId === client);
+          if (found) return { list: [this.normalize(found)] };
+          if (rows.length < 100) break;
+          const next = rows.at(-1)?.ordId;
+          if (!next || next === after || page === 99)
+            throw Error("PAGINATED_HISTORY_LIMIT_REACHED");
+          after = next;
+        }
+      }
+      return { list: [] };
+    }
   }
   async getExecutions(cursor?: string, since?: number, until?: number) {
     if (this.provider !== "OKX") {
@@ -550,8 +578,13 @@ export class PerpetualExchange implements PerpetualAdapter {
         "POST",
       )
     )[0];
-    if (r?.sCode !== "0")
-      throw new ExchangeError(Number(r?.sCode || 0), "ORDER_REJECTED");
+    if (r?.sCode !== "0" || !r?.ordId)
+      throw new ExchangeError(
+        Number(r?.sCode || 0),
+        r?.sCode && r.sCode !== "0"
+          ? "ORDER_REJECTED"
+          : "EXCHANGE_RESPONSE_INVALID",
+      );
     return { orderId: r.ordId };
   }
   async cancelOrder(_symbol: string, id: string) {

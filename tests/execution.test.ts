@@ -435,7 +435,8 @@ test("lost acknowledgement reconciles the existing exchange order and fill witho
   assert.equal(state.orders[0].state, "Filled");
   assert.equal(state.portfolio.reserved, 0);
   assert.ok(Number(state.position.quantity) > 0);
-  assert.equal(state.bot.status, "RISK_LOCKED");
+  assert.equal(state.bot.status, "RUNNING");
+  assert.equal(state.bot.execution_resume_requested, false);
 });
 test("stopping cancels resting entries without creating a replacement", async () => {
   const f = await fixture("dca-v1.0", { entryType: "LIMIT" });

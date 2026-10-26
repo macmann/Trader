@@ -1,3 +1,4 @@
+import { definitiveOrderRejection } from "../../../packages/core/src/index.ts";
 import { assetTotal, checkInventory } from "./inventory.ts";
 import { testnetExecutionEnabled } from "../../api/src/installation.ts";
 import { entitlements } from "../../api/src/platform.ts";
@@ -260,9 +261,7 @@ export async function dispatchIntent(
     await orderEvent(db, tid, id, "acknowledged", "SUBMITTED");
     return true;
   } catch (e) {
-    const rejected =
-      e instanceof ExchangeError &&
-      [10001, 110007, 170131, 170137, 170140, 170193].includes(e.code);
+    const rejected = definitiveOrderRejection(e);
     await db.query(
       "UPDATE orders SET state=$1,updated_at=now() WHERE id=$2 AND tenant_id=$3",
       [rejected ? "Rejected" : "UNKNOWN", id, tid],
@@ -273,10 +272,13 @@ export async function dispatchIntent(
       id,
       rejected ? "rejected" : "ambiguous",
       rejected ? "Rejected" : "UNKNOWN",
+      e instanceof ExchangeError
+        ? { reason: e.status, exchangeCode: e.code }
+        : { reason: "TRANSPORT_OR_SUBMISSION_ERROR" },
     );
     if (!rejected)
       await db.query(
-        "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
+        "UPDATE bots SET execution_resume_requested=(status IN ('STARTING','RUNNING') OR execution_resume_requested),status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
         [o.bot_id, tid],
       );
     return false;

@@ -1,3 +1,4 @@
+import { RetryPolicy, transientExchangeFailure } from "./retry-policy.ts";
 import {
   PerpetualExchange,
   type PerpetualAdapter,
@@ -419,6 +420,18 @@ export async function tick(
       report("RECONCILING");
       const ready = await reconcile(db, tid, row.connection_id, adapter);
       observation.reconciled = ready;
+      if (
+        ready &&
+        row.status === "RISK_LOCKED" &&
+        row.execution_resume_requested
+      ) {
+        await db.query(
+          "UPDATE bots SET status='STARTING',execution_resume_requested=false WHERE id=$1 AND tenant_id=$2",
+          [botId, tid],
+        );
+        row.status = "STARTING";
+        await audit(db, tid, "BOT_ORDER_RECOVERED", { botId });
+      }
       const controls = (
         await db.query(
           "SELECT execution_stopped FROM platform_controls WHERE id=true",
@@ -899,7 +912,17 @@ export async function tick(
         await db.query(
           "UPDATE signals SET decision=decision||$1::jsonb WHERE id=$2 AND tenant_id=$3",
           [
-            JSON.stringify({ approved: false, reasons: instrumentReasons }),
+            JSON.stringify({
+              approved: false,
+              outcome: exit ? "EXIT_REJECTED" : "ENTRY_REJECTED",
+              reasons: instrumentReasons,
+              instrumentValidation: {
+                quantity: qty,
+                price: type === "LIMIT" ? Number(limitPrice) : price,
+                orderType: type,
+                limits: instrument.lotSizeFilter,
+              },
+            }),
             signalId,
             tid,
           ],
@@ -990,6 +1013,8 @@ export async function startWorker() {
     notificationJob: Promise<void> | null = null;
   let lastPaper = 0,
     lastNotifications = 0;
+  const connectionRetries = new RetryPolicy();
+  const botRetries = new RetryPolicy();
   while (!closing) {
     try {
       if (!newsJob)
@@ -1025,6 +1050,13 @@ export async function startWorker() {
         );
         for (const b of bots) {
           active.add(b.connection_id);
+          const retryKey = `${w.id}:${b.connection_id}`;
+          const botRetryKey = `${w.id}:${b.id}`;
+          if (
+            !connectionRetries.ready(retryKey) ||
+            !botRetries.ready(botRetryKey)
+          )
+            continue;
           let observation: BotObservation = {
             stage: "WAITING",
             reasons: ["NO_WORKER_CHECK_RESULT"],
@@ -1033,8 +1065,18 @@ export async function startWorker() {
             await tick(w.id, b.id, undefined, (snapshot) => {
               observation = snapshot;
             });
+            // Unknown orders remain blocked, but should not hammer exchange lookup APIs.
+            if (observation.reasons.includes("RECONCILIATION_REQUIRED"))
+              observation.retryAt = botRetries.failure(botRetryKey);
+            else botRetries.success(botRetryKey);
+            connectionRetries.success(retryKey);
           } catch (e) {
             observation = failureObservation(e);
+            const temporary = transientExchangeFailure(e);
+            observation.retryAt = temporary
+              ? connectionRetries.failure(retryKey)
+              : botRetries.failure(botRetryKey);
+            if (temporary) observation.stage = "EXCHANGE_BACKOFF";
             console.error(
               JSON.stringify({
                 event: "BOT_CHECK_FAILED",
@@ -1043,10 +1085,11 @@ export async function startWorker() {
               }),
             );
             await tenant(w.id, async (db) => {
-              await db.query(
-                "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
-                [b.id, w.id],
-              );
+              if (!temporary)
+                await db.query(
+                  "UPDATE bots SET status='RISK_LOCKED',execution_resume_requested=false WHERE id=$1 AND tenant_id=$2 AND status<>'ARCHIVED'",
+                  [b.id, w.id],
+                );
               await audit(db, w.id, "RECONCILIATION_FAILED", {
                 botId: b.id,
                 reason: observation.reasons[0],

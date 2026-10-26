@@ -64,7 +64,7 @@ export function registerBotDeleteRoutes(app: FastifyInstance) {
       )
         return reply.code(409).send({ error: "RECONCILE_BEFORE_DELETING_BOT" });
       await db.query(
-        "UPDATE bots SET status='ARCHIVED',deleted_at=now() WHERE id=$1 AND tenant_id=$2",
+        "UPDATE bots SET status='ARCHIVED',execution_resume_requested=false,deleted_at=now() WHERE id=$1 AND tenant_id=$2",
         [id, tid],
       );
       await db.query(

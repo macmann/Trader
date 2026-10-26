@@ -11,6 +11,7 @@ export type BotObservation = {
   reconciled?: boolean;
   executionEnabled?: boolean;
   exchangeCode?: number;
+  retryAt?: number;
   candleTime?: number;
   inventory?: InventoryError["details"];
   futures?: {
@@ -99,7 +100,9 @@ export async function recordObservation(
   // Monitoring is separate from financial transactions and must not roll them back.
   if (value.reasons.includes("NO_WORKER_CHECK_RESULT")) return;
   const failed =
-    value.stage === "CHECK_FAILED" || value.stage === "RISK_LOCKED";
+    value.stage === "CHECK_FAILED" ||
+    value.stage === "EXCHANGE_BACKOFF" ||
+    value.stage === "RISK_LOCKED";
   const recovered = [
     "EVALUATING",
     "WAITING_CANDLE",
@@ -114,7 +117,7 @@ export async function recordObservation(
           botId,
           tid,
           JSON.stringify(value),
-          value.stage !== "CHECK_FAILED",
+          !["CHECK_FAILED", "EXCHANGE_BACKOFF"].includes(value.stage),
           Number.isFinite(value.price) && value.price! > 0 ? value.price : null,
           value.priceAt ? new Date(value.priceAt) : null,
           failed && !value.reasons.includes("BOT_NOT_ACTIVE"),

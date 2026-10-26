@@ -16,6 +16,12 @@ const text = (v: unknown) =>
     .replaceAll("_", " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2");
 const descriptions: Record<string, string> = {
+  RATE_LIMITED:
+    "The exchange is limiting requests. Checks retry automatically with backoff; no new order is sent before reconciliation succeeds.",
+  INVALID_INSTRUMENT_METADATA:
+    "Exchange trading limits could not be validated. No order was submitted. Review the recorded quantity and instrument limits in Signals & risk.",
+  FUTURES_SUBMISSION_UNCERTAIN:
+    "The exchange did not confirm submission. The bot checks order history and fills without resending. Missing or partial evidence keeps new entries blocked.",
   ISOLATED_MARGIN_REQUIRED:
     "Futures requires isolated margin. Review the account margin mode at the exchange; this app does not switch account-wide modes.",
   ONE_WAY_POSITION_MODE_REQUIRED:
@@ -573,6 +579,12 @@ export function BotMonitor({
                 <dd>{when(m?.last_success_at)}</dd>
                 <dt>Worker stage</dt>
                 <dd>{text(s.stage)}</dd>
+                {s.retryAt && (
+                  <>
+                    <dt>Next exchange check</dt>
+                    <dd>{when(s.retryAt)} · automatic retry with backoff</dd>
+                  </>
+                )}
                 <dt>Private order/fill stream</dt>
                 <dd>
                   {s.privateReady === undefined

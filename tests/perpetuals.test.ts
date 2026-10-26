@@ -626,3 +626,127 @@ test("a deleted futures bot releases contract ownership without forgetting old f
   assert.equal(Number((await state(replacement)).position.quantity), 0);
   assert.equal((await state(old)).cycles.length, 1);
 });
+
+test("definitive futures rejection keeps its exchange code and does not become an ambiguous order", async () => {
+  const f = await fixture();
+  const { ExchangeError } = await import("../packages/core/src/index.ts");
+  f.broker.placeOrder = async () => {
+    f.broker.creates++;
+    throw new ExchangeError(51008, "ORDER_REJECTED");
+  };
+  await run(f);
+  assert.equal((await state(f)).orders[0].state, "Rejected");
+  const events = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query(
+          "SELECT data FROM order_events WHERE tenant_id=$1 AND state='Rejected'",
+          [f.tid],
+        )
+      ).rows,
+  );
+  assert.equal(events[0].data.exchangeCode, 51008);
+  await run(f);
+  assert.equal(f.broker.creates, 1);
+});
+test("complete authenticated futures fills recover an unknown order even when order lookup returns absent", async () => {
+  const f = await fixture();
+  f.broker.lostAck = true;
+  await run(f);
+  f.broker.getOrder = async () => ({ list: [] });
+  await run(f);
+  assert.equal((await state(f)).orders[0].state, "Filled");
+  assert.ok(Number((await state(f)).position.quantity) > 0);
+  const recoveredBot = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query(
+          "SELECT status,execution_resume_requested FROM bots WHERE id=$1",
+          [f.bid],
+        )
+      ).rows[0],
+  );
+  assert.equal(recoveredBot.status, "RUNNING");
+  assert.equal(recoveredBot.execution_resume_requested, false);
+  // Protection resumes after recovery; it does not require another AI entry signal.
+  f.broker.price = 97;
+  await run(f);
+  await run(f);
+  assert.equal(f.broker.creates, 2);
+  assert.equal(Number((await state(f)).position.quantity), 0);
+});
+test("absent futures order without fills stays unknown and is never resubmitted", async () => {
+  const f = await fixture();
+  f.broker.placeOrder = async () => {
+    f.broker.creates++;
+    throw Error("TIMEOUT");
+  };
+  await run(f);
+  f.broker.getOrder = async () => ({ list: [] });
+  await run(f);
+  await run(f);
+  assert.equal((await state(f)).orders[0].state, "UNKNOWN");
+  assert.equal(f.broker.creates, 1);
+});
+test("OKX futures missing-order lookup searches terminal history and preserves absence/other failures", async () => {
+  const calls: string[] = [];
+  let found = true;
+  const adapter = new PerpetualExchange(
+    "OKX",
+    "SOLUSDT",
+    { apiKey: "history-fixture", apiSecret: "fixture", passphrase: "fixture" },
+    async (url: any) => {
+      const path = new URL(url).pathname;
+      calls.push(path);
+      if (path === "/api/v5/trade/order")
+        return new Response(JSON.stringify({ code: "51603", data: [] }));
+      return new Response(
+        JSON.stringify({
+          code: "0",
+          data:
+            path.endsWith("-archive") && found
+              ? [
+                  {
+                    ordId: "remote-history",
+                    clOrdId: "lookup",
+                    state: "filled",
+                    accFillSz: "0.09",
+                  },
+                ]
+              : [],
+        }),
+      );
+    },
+  );
+  assert.equal(
+    (await adapter.getOrder("lookup")).list[0].orderId,
+    "remote-history",
+  );
+  assert.ok(calls.includes("/api/v5/trade/orders-history-archive"));
+  found = false;
+  assert.deepEqual((await adapter.getOrder("lookup")).list, []);
+});
+
+test("stopping an uncertain bot cancels resume intent while retaining late fills", async () => {
+  const f = await fixture();
+  f.broker.lostAck = true;
+  await run(f);
+  await tenant(f.tid, async (db) => {
+    await db.query(
+      "UPDATE bots SET status='STOPPED',execution_resume_requested=false WHERE id=$1",
+      [f.bid],
+    );
+  });
+  f.broker.getOrder = async () => ({ list: [] });
+  await run(f);
+  const bot = await tenant(
+    f.tid,
+    async (db) =>
+      (await db.query("SELECT status FROM bots WHERE id=$1", [f.bid])).rows[0],
+  );
+  assert.equal(bot.status, "STOPPED");
+  assert.equal((await state(f)).orders[0].state, "Filled");
+  assert.equal(f.broker.creates, 1);
+});

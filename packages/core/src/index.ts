@@ -393,3 +393,18 @@ export class BybitAdapter {
     );
   }
 }
+
+// Only documented validation/balance failures prove an order was not accepted.
+// Timeouts, duplicate IDs and generic exchange errors remain uncertain.
+export function definitiveOrderRejection(
+  error: unknown,
+): error is ExchangeError {
+  return (
+    error instanceof ExchangeError &&
+    ([10001, 110007, 170131, 170137, 170140, 170193].includes(error.code) ||
+      (error.status === "ORDER_REJECTED" &&
+        [
+          51000, 51001, 51004, 51008, 51010, 51020, 51119, 51121, 51122, 51131,
+        ].includes(error.code)))
+  );
+}

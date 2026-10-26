@@ -425,13 +425,16 @@ export function instrumentVeto(
       p = new Decimal(price),
       step = new Decimal(String(filter.basePrecision)),
       minValue = new Decimal(String(filter.minOrderAmt)),
-      maxQty = new Decimal(
-        String(
-          (orderType === "LIMIT"
-            ? filter.maxLimitOrderQty
-            : filter.maxMarketOrderQty) ?? filter.maxOrderQty,
-        ),
-      );
+      rawMax =
+        (orderType === "LIMIT"
+          ? filter.maxLimitOrderQty
+          : filter.maxMarketOrderQty) ?? filter.maxOrderQty,
+      // OKX Spot may publish only a market notional ceiling. Never invent a size cap.
+      maxQty =
+        (rawMax === undefined || rawMax === "" || Number(rawMax) === 0) &&
+        orderType === "MARKET"
+          ? new Decimal(String(filter.maxOrderAmt)).div(p)
+          : new Decimal(String(rawMax));
     if (
       [q, p, step, maxQty].some((v) => !v.isFinite() || v.lte(0)) ||
       !minValue.isFinite() ||

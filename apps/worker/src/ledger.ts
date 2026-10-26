@@ -361,7 +361,31 @@ export async function reconcile(
   }
   let ready = true;
   for (const order of unfinished) {
-    const remote = remoteOrders.get(order.id);
+    let remote = remoteOrders.get(order.id);
+    if (!remote) {
+      // A complete set of authenticated fills can recover a lost order acknowledgement.
+      // Partial/absent fills cannot establish terminal status and remain UNKNOWN.
+      const recovered = fills.filter(
+        (f) =>
+          f.orderLinkId === order.client_id ||
+          (order.exchange_id && f.orderId === order.exchange_id),
+      );
+      const identities = new Set(recovered.map((f) => f.orderId));
+      const quantity = recovered.reduce(
+        (sum, f) => sum.plus(f.execQty),
+        new Decimal(0),
+      );
+      if (
+        identities.size === 1 &&
+        recovered[0]?.orderId &&
+        quantity.eq(order.quantity)
+      )
+        remote = {
+          orderId: recovered[0].orderId,
+          orderStatus: "Filled",
+          cumExecQty: quantity.toFixed(),
+        };
+    }
     if (!remote) {
       ready = false;
       await db.query(
