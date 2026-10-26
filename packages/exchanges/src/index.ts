@@ -1,11 +1,14 @@
 import { okxInterval } from "../../trading/src/timeframes.ts";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   BybitAdapter,
   ExchangeError,
   type Credentials,
   type Candle,
 } from "../../core/src/index.ts";
+// Shared by Spot and futures adapter instances for the same account in this process.
+const requestSlots = new Map<string, number>();
+const cooldowns = new Map<string, number>();
 export type ExchangeCredentials = Credentials & { passphrase?: string };
 export type ExchangeAdapter = Pick<
   BybitAdapter,
@@ -72,6 +75,17 @@ export class OKXAdapter implements ExchangeAdapter {
     method: "GET" | "POST" = "GET",
     auth = true,
   ): Promise<any[]> {
+    const account = createHash("sha256")
+      .update(this.credentials?.apiKey ?? "public")
+      .digest("hex");
+    if ((cooldowns.get(account) ?? 0) > Date.now())
+      throw new ExchangeError(429, "RATE_LIMITED");
+    const slot = Math.max(Date.now(), requestSlots.get(account) ?? 0);
+    requestSlots.set(account, slot + 250);
+    if (slot > Date.now())
+      await new Promise((resolve) => setTimeout(resolve, slot - Date.now()));
+    if ((cooldowns.get(account) ?? 0) > Date.now())
+      throw new ExchangeError(429, "RATE_LIMITED");
     const query = new URLSearchParams(
         Object.entries(params).map(([k, v]) => [k, String(v)]),
       ).toString(),
@@ -100,6 +114,7 @@ export class OKXAdapter implements ExchangeAdapter {
       body: method === "POST" ? body : undefined,
       signal: AbortSignal.timeout(15000),
     });
+    if (r.status === 429) cooldowns.set(account, Date.now() + 30000);
     if (!r.ok)
       throw new ExchangeError(
         r.status,
@@ -110,12 +125,25 @@ export class OKXAdapter implements ExchangeAdapter {
             : "EXCHANGE_HTTP_ERROR",
       );
     const result = (await r.json()) as any;
+    if (["50011", "50040"].includes(result.code))
+      cooldowns.set(account, Date.now() + 30000);
+    if (
+      result.code === "1" &&
+      method === "POST" &&
+      path === "/api/v5/trade/order" &&
+      result.data?.length === 1 &&
+      /^\d+$/.test(result.data[0]?.sCode) &&
+      result.data[0].sCode !== "0"
+    )
+      throw new ExchangeError(Number(result.data[0].sCode), "ORDER_REJECTED");
     if (result.code !== "0")
       throw new ExchangeError(
         Number(result.code),
-        ["50110", "50111", "50113", "50114"].includes(result.code)
-          ? "INVALID_CREDENTIALS"
-          : "EXCHANGE_ERROR",
+        ["50011", "50040"].includes(result.code)
+          ? "RATE_LIMITED"
+          : ["50110", "50111", "50113", "50114"].includes(result.code)
+            ? "INVALID_CREDENTIALS"
+            : "EXCHANGE_ERROR",
       );
     if (!Array.isArray(result.data))
       throw new ExchangeError(0, "EXCHANGE_RESPONSE_INVALID");

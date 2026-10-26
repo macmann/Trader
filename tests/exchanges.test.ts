@@ -191,3 +191,79 @@ test("Bybit Spot translates daily intervals without changing minute intervals", 
     await adapter.getCandles("BTCUSDT", interval);
   assert.deepEqual(intervals, ["5", "15", "30", "60", "240", "D"]);
 });
+
+test("OKX market limits support a notional ceiling without accepting missing/invalid limits", async () => {
+  const adapter = new OKXAdapter("TESTNET", undefined, async () =>
+    response([
+      {
+        state: "live",
+        tickSz: "0.01",
+        lotSz: "0.000001",
+        minSz: "0.00001",
+        maxMktSz: "",
+        maxMktAmt: "1000000",
+        maxLmtSz: "1000",
+      },
+    ]),
+  );
+  const filter = (await adapter.getInstrument("ETHUSDT")).list[0].lotSizeFilter;
+  assert.deepEqual(instrumentVeto("0.008", 2332, filter), []);
+  assert.ok(
+    instrumentVeto("500", 2332, filter).includes(
+      "ABOVE_EXCHANGE_MAXIMUM_NOTIONAL",
+    ),
+  );
+  assert.deepEqual(instrumentVeto("0.000001", 2332, filter), [
+    "BELOW_EXCHANGE_MINIMUM_QUANTITY",
+  ]);
+  assert.deepEqual(
+    instrumentVeto("0.008", 2332, { ...filter, maxOrderAmt: "" }),
+    ["INVALID_INSTRUMENT_METADATA"],
+  );
+});
+test("OKX preserves per-order rejection code under a batch failure without exposing raw messages", async () => {
+  const adapter = new OKXAdapter(
+    "TESTNET",
+    { ...credentials, apiKey: "rejection-fixture" },
+    async () =>
+      new Response(
+        JSON.stringify({
+          code: "1",
+          msg: "sensitive raw message",
+          data: [{ sCode: "51008", sMsg: "raw balance" }],
+        }),
+      ),
+  );
+  await assert.rejects(
+    adapter.placeOrder({
+      symbol: "ETHUSDT",
+      side: "Buy",
+      qty: "0.01",
+      orderLinkId: "reject1",
+    }),
+    (error: any) =>
+      error.code === 51008 &&
+      error.status === "ORDER_REJECTED" &&
+      !error.message.includes("raw"),
+  );
+});
+
+test("OKX rate-limit cooldown is shared between adapter instances for an account", async () => {
+  let requests = 0;
+  const transport: typeof fetch = async () => {
+    requests++;
+    return new Response("", { status: 429 });
+  };
+  const c = { ...credentials, apiKey: "cooldown-fixture" };
+  const a = new OKXAdapter("TESTNET", c, transport);
+  const b = new OKXAdapter("TESTNET", c, transport);
+  await assert.rejects(
+    a.getBalances(),
+    (e: any) => e.status === "RATE_LIMITED",
+  );
+  await assert.rejects(
+    b.getBalances(),
+    (e: any) => e.status === "RATE_LIMITED",
+  );
+  assert.equal(requests, 1);
+});

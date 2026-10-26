@@ -6,6 +6,7 @@ import {
   risk,
   quantize,
   ExchangeError,
+  definitiveOrderRejection,
 } from "../../../packages/core/src/index.ts";
 import {
   duration,
@@ -292,16 +293,28 @@ export async function dispatchPerpetual(
     );
     await orderEvent(db, tid, id, "acknowledged", "SUBMITTED");
   } catch (error) {
+    const rejected = definitiveOrderRejection(error);
+    const state = rejected ? "Rejected" : "UNKNOWN";
     await db.query(
-      "UPDATE orders SET state='UNKNOWN',updated_at=now() WHERE id=$1 AND tenant_id=$2",
-      [id, tid],
+      "UPDATE orders SET state=$3,updated_at=now() WHERE id=$1 AND tenant_id=$2",
+      [id, tid, state],
     );
+    if (rejected) {
+      await orderEvent(db, tid, id, "rejected", "Rejected", {
+        reason: "ORDER_REJECTED",
+        exchangeCode: error.code,
+      });
+      return;
+    }
     await db.query(
-      "UPDATE bots SET status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
+      "UPDATE bots SET execution_resume_requested=(status IN ('STARTING','RUNNING') OR execution_resume_requested),status='RISK_LOCKED' WHERE id=$1 AND tenant_id=$2",
       [o.bot_id, tid],
     );
     await orderEvent(db, tid, id, "ambiguous", "UNKNOWN", {
       reason: "FUTURES_SUBMISSION_UNCERTAIN",
+      ...(error instanceof ExchangeError
+        ? { exchangeCode: error.code, status: error.status }
+        : { status: "TRANSPORT_OR_SUBMISSION_ERROR" }),
     });
   }
 }
@@ -347,6 +360,14 @@ export async function perpetualTick(
   }
   await reconcileFunding(db, tid, bot, adapter);
   let { p, remote } = await assertContract(db, tid, bot, adapter);
+  if (bot.status === "RISK_LOCKED" && bot.execution_resume_requested) {
+    await db.query(
+      "UPDATE bots SET status='STARTING',execution_resume_requested=false WHERE id=$1 AND tenant_id=$2",
+      [bot.id, tid],
+    );
+    bot.status = "STARTING";
+    await audit(db, tid, "BOT_ORDER_RECOVERED", { botId: bot.id });
+  }
   const pending = (
     await db.query(
       "SELECT * FROM orders WHERE tenant_id=$1 AND bot_id=$2 AND NOT(state=ANY($3::text[])) ORDER BY created_at",

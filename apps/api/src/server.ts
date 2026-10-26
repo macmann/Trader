@@ -553,7 +553,7 @@ app.delete("/api/connections/:id", async (req, reply) => {
         .code(409)
         .send({ error: "OPEN_EXPOSURE_PREVENTS_DISCONNECT" });
     await db.query(
-      "UPDATE bots SET status='STOPPED' WHERE connection_id=$1 AND tenant_id=$2 AND status<>'ARCHIVED'",
+      "UPDATE bots SET status='STOPPED',execution_resume_requested=false WHERE connection_id=$1 AND tenant_id=$2 AND status<>'ARCHIVED'",
       [id, tid],
     );
     await db.query(
@@ -753,11 +753,10 @@ app.post("/api/bots/:id/:action", async (req, reply) => {
         "UPDATE bot_runs SET stopped_at=now(),stop_reason='STOP' WHERE tenant_id=$1 AND bot_id=$2 AND stopped_at IS NULL",
         [tid, p.id],
       );
-    await db.query("UPDATE bots SET status=$1 WHERE id=$2 AND tenant_id=$3", [
-      status,
-      p.id,
-      tid,
-    ]);
+    await db.query(
+      "UPDATE bots SET status=$1,execution_resume_requested=false WHERE id=$2 AND tenant_id=$3",
+      [status, p.id, tid],
+    );
     await audit(db, tid, `BOT_${p.action.toUpperCase()}`, { id: p.id });
     return { status };
   });
@@ -766,7 +765,7 @@ app.post("/api/stop-all", async (req) =>
   tenant(req.identity!.tenantId, async (db) => {
     await lockPortfolio(db, req.identity!.tenantId);
     await db.query(
-      "UPDATE bots SET status='STOPPED' WHERE tenant_id=$1 AND status<>'ARCHIVED'",
+      "UPDATE bots SET status='STOPPED',execution_resume_requested=false WHERE tenant_id=$1 AND status<>'ARCHIVED'",
       [req.identity!.tenantId],
     );
     await db.query(
