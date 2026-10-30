@@ -1,3 +1,4 @@
+import { workerHealth } from "../../../packages/core/src/worker-health.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { tenant } from "./db.ts";
@@ -26,9 +27,13 @@ export function summarizeDiagnostics(
   now = Date.now(),
 ) {
   const findings: string[] = [];
-  if (!monitor || now - new Date(monitor.checked_at).getTime() > 120000)
+  if (workerHealth(monitor, now).stale)
     findings.push(
       "No recent worker observation. Check the worker container and exchange connectivity.",
+    );
+  if (workerHealth(monitor, now).waiting)
+    findings.push(
+      "Worker is waiting for its scheduled retry; this does not establish exchange or price freshness.",
     );
   if (bot.status !== "RUNNING")
     findings.push(`Bot status is ${bot.status}; it is not currently running.`);
@@ -150,7 +155,7 @@ export function registerBotDiagnostics(app: FastifyInstance) {
             where: "x.bot_id=$1 AND x.tenant_id=$2",
             time: "x.updated_at",
             fields:
-              "x.id,x.signal_id,x.client_id,x.exchange_id,x.side,x.symbol,x.quantity,x.market_type,x.purpose,x.position_direction,x.leverage,x.order_type,x.limit_price,x.state,x.strategy_version,x.run_id,x.created_at,x.updated_at",
+              "x.id,x.signal_id,x.client_id,x.exchange_id,x.side,x.symbol,x.quantity,x.market_type,x.purpose,x.position_direction,x.leverage,x.order_type,x.limit_price,x.state,x.strategy_version,x.run_id,x.created_at,x.updated_at,x.recovery_requested_at,x.recovery_confirmed_by",
           },
           fills: {
             from: "executions x JOIN orders o ON o.id=x.order_id AND o.tenant_id=x.tenant_id",

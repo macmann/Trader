@@ -1339,3 +1339,20 @@ label small {
   line-height: 1.6;
   color: #c9b5bd;
 }
+
+.order-recovery label {
+  margin: 14px 0;
+  max-width: 70ch;
+}
+.order-recovery .recovery-confirmation {
+  flex-direction: row;
+  align-items: flex-start;
+  line-height: 1.6;
+}
+.order-recovery .recovery-confirmation input {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.order-recovery input[type="password"] {
+  max-width: 360px;
+}
