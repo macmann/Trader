@@ -1,3 +1,4 @@
+import { OrderRecovery } from "./OrderRecovery.tsx";
 import { timeframeLabel } from "../../../packages/trading/src/timeframes.ts";
 import { BotDiagnostics } from "./BotDiagnostics.tsx";
 import { MonitorHistory } from "./MonitorHistory.tsx";
@@ -358,13 +359,23 @@ export function BotMonitor({
             : text(b.status)}
         </strong>
         <span>
-          Worker: {snapshot.workerFresh ? "recent check" : "stale / unknown"}
+          Worker:{" "}
+          {snapshot.workerWaitingForRetry
+            ? "waiting for scheduled retry"
+            : snapshot.workerFresh
+              ? "recent check"
+              : "stale / unknown"}
         </span>
         <span>
           Testnet execution: {snapshot.executionEnabled ? "On" : "Off"}
         </span>
         <span>Exchange: {text(b.connection_status)}</span>
       </div>
+      <OrderRecovery
+        snapshot={snapshot}
+        request={request}
+        refresh={async () => setSnapshot(await request(`/bots/${id}/monitor`))}
+      />
       <div className="actions">
         {["start", "pause", "stop"].map((action) => (
           <button

@@ -343,3 +343,94 @@ test("monitor returns real ledger state, paginated entries/exits, sessions and s
     null,
   );
 });
+
+test("missing-order recovery requires owner confirmation, reauthentication and tenant-scoped identity", async () => {
+  const a = await actor(),
+    b = await actor(),
+    oid = randomUUID();
+  await admin.query(
+    "UPDATE exchange_connections SET provider='OKX' WHERE id=$1",
+    [a.cid],
+  );
+  await admin.query(
+    "UPDATE bots SET market_type='LINEAR',strategy_version='ai-v1.0',status='RISK_LOCKED' WHERE id=$1",
+    [a.bid],
+  );
+  await admin.query(
+    "INSERT INTO orders(id,tenant_id,bot_id,client_id,state,side,quantity,market_type) VALUES($1,$2,$3,$4,'UNKNOWN','Buy',0.09,'LINEAR')",
+    [oid, a.tid, a.bid, randomUUID()],
+  );
+  const send = (
+    headers: any,
+    payload: any = { orderId: oid, confirmedNoExchangeActivity: true },
+  ) =>
+    app.inject({
+      method: "POST",
+      url: `/api/bots/${a.bid}/recover-missing-order`,
+      headers,
+      payload,
+    });
+  await admin.query(
+    "UPDATE sessions SET reauthenticated_at=now()-interval '10 minutes' WHERE user_id=$1",
+    [a.uid],
+  );
+  assert.equal((await send(a.headers)).statusCode, 403);
+  await admin.query(
+    "UPDATE sessions SET reauthenticated_at=now() WHERE user_id=$1",
+    [a.uid],
+  );
+  assert.equal(
+    (
+      await send(a.headers, {
+        orderId: oid,
+        confirmedNoExchangeActivity: false,
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (await send({ ...a.headers, "x-csrf-token": "wrong" })).statusCode,
+    403,
+  );
+  await admin.query(
+    "UPDATE sessions SET reauthenticated_at=now() WHERE user_id=$1",
+    [b.uid],
+  );
+  assert.equal((await send(b.headers)).statusCode, 404);
+  const accepted = await send(a.headers);
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  assert.equal(accepted.json().botStatus, "STOPPED");
+  assert.equal((await call(a, "/start", "POST")).statusCode, 409);
+  const monitor = (await call(a, "/monitor")).json();
+  assert.equal(monitor.bot.status, "STOPPED");
+  assert.ok(monitor.openOrders[0].recovery_requested_at);
+  assert.equal(
+    monitor.latestRecovery.action,
+    "MISSING_ORDER_RECOVERY_REQUESTED",
+  );
+});
+
+test("monitor reports scheduled backoff without claiming a fresh check or suppressing overdue warnings", async () => {
+  const a = await actor(),
+    now = Date.now();
+  await recordObservation(a.tid, a.bid, {
+    stage: "RISK_LOCKED",
+    reasons: ["RECONCILIATION_REQUIRED"],
+    retryAt: now + 60000,
+  });
+  await admin.query("UPDATE bot_monitoring SET checked_at=$1 WHERE bot_id=$2", [
+    new Date(now - 240000),
+    a.bid,
+  ]);
+  let monitor = (await call(a, "/monitor")).json();
+  assert.equal(monitor.workerFresh, false);
+  assert.equal(monitor.workerWaitingForRetry, true);
+  assert.ok(!monitor.blockers.includes("WORKER_STATUS_STALE_OR_UNKNOWN"));
+  await admin.query(
+    "UPDATE bot_monitoring SET snapshot=jsonb_set(snapshot,'{retryAt}',to_jsonb($1::bigint)) WHERE bot_id=$2",
+    [now - 60000, a.bid],
+  );
+  monitor = (await call(a, "/monitor")).json();
+  assert.equal(monitor.workerWaitingForRetry, false);
+  assert.ok(monitor.blockers.includes("WORKER_STATUS_STALE_OR_UNKNOWN"));
+});

@@ -1,3 +1,4 @@
+import { registerOrderRecoveryRoutes } from "./order-recovery-routes.ts";
 import { registerBotDeleteRoutes } from "./bot-delete-routes.ts";
 import { registerAdminUserRoutes } from "./admin-users-routes.ts";
 import { registerBotDiagnostics } from "./bot-diagnostics.ts";
@@ -736,6 +737,16 @@ app.post("/api/bots/:id/:action", async (req, reply) => {
       (p.action === "stop" && b.rows[0].status === "STOPPED")
     )
       return { status: b.rows[0].status, unchanged: true };
+    if (
+      p.action === "start" &&
+      (
+        await db.query(
+          "SELECT 1 FROM orders WHERE tenant_id=$1 AND bot_id=$2 AND recovery_requested_at IS NOT NULL LIMIT 1",
+          [tid, p.id],
+        )
+      ).rowCount
+    )
+      return reply.code(409).send({ error: "RECOVERY_CHECK_PENDING" });
     if (!botActionEnabled(b.rows[0].status, p.action))
       return reply.code(409).send({ error: "INVALID_BOT_STATE_TRANSITION" });
     if (p.action === "start" && b.rows[0].connection_status !== "CONNECTED")
@@ -791,6 +802,7 @@ for (const table of ["signals", "orders", "audit_logs"] as const)
   );
 registerBotMonitorRoutes(app);
 registerBotDeleteRoutes(app);
+registerOrderRecoveryRoutes(app);
 registerBotDiagnostics(app);
 registerInstallationRoutes(app);
 registerAdminUserRoutes(app);

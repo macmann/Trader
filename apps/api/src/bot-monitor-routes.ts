@@ -1,3 +1,4 @@
+import { workerHealth } from "../../../packages/core/src/worker-health.ts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { tenant } from "./db.ts";
@@ -60,7 +61,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         ).rows[0] ?? null;
       const pending = (
         await db.query(
-          "SELECT id,client_id,exchange_id,side,symbol,quantity,state,order_type,limit_price,requested_notional,created_at,updated_at,run_id FROM orders WHERE tenant_id=$1 AND bot_id=$2 AND NOT(state=ANY($3::text[])) ORDER BY created_at DESC,id",
+          "SELECT id,client_id,exchange_id,side,symbol,quantity,state,order_type,limit_price,requested_notional,created_at,updated_at,run_id,recovery_requested_at FROM orders WHERE tenant_id=$1 AND bot_id=$2 AND NOT(state=ANY($3::text[])) ORDER BY created_at DESC,id",
           [tid, id, terminalStates],
         )
       ).rows;
@@ -104,10 +105,15 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
           )
         ).rows[0].execution_stopped;
       const now = Date.now(),
-        fresh =
-          !!monitor &&
-          now >= new Date(monitor.checked_at).getTime() &&
-          now - new Date(monitor.checked_at).getTime() < 120000;
+        health = workerHealth(monitor, now),
+        fresh = health.recent;
+      const latestRecovery =
+        (
+          await db.query(
+            "SELECT action,data,created_at FROM audit_logs WHERE tenant_id=$1 AND data->>'botId'=$2 AND action IN ('MISSING_ORDER_RECOVERY_REQUESTED','MISSING_ORDER_RECOVERY_COMPLETED','MISSING_ORDER_RECOVERY_REFUSED') ORDER BY id DESC LIMIT 1",
+            [tid, id],
+          )
+        ).rows[0] ?? null;
       const priceFresh =
         !!monitor?.price_at &&
         now >= new Date(monitor.price_at).getTime() &&
@@ -134,7 +140,7 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         ...(bot.connection_status !== "CONNECTED"
           ? ["EXCHANGE_NOT_CONNECTED"]
           : []),
-        ...(!fresh ? ["WORKER_STATUS_STALE_OR_UNKNOWN"] : []),
+        ...(health.stale ? ["WORKER_STATUS_STALE_OR_UNKNOWN"] : []),
         ...(bot.status === "RISK_LOCKED" ? ["RISK_LOCKED"] : []),
       ];
       return {
@@ -142,6 +148,14 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         bot,
         monitoring: monitor,
         workerFresh: fresh,
+        workerWaitingForRetry: health.waiting,
+        latestRecovery,
+        recoveryAvailable:
+          bot.provider === "OKX" &&
+          bot.environment === "TESTNET" &&
+          bot.market_type === "LINEAR" &&
+          bot.status !== "ARCHIVED" &&
+          ["OWNER", "ADMIN"].includes(req.identity!.role),
         priceFresh,
         position,
         inventory,
@@ -166,7 +180,11 @@ export function registerBotMonitorRoutes(app: FastifyInstance) {
         actions: Object.fromEntries(
           ["start", "pause", "stop"].map((action) => [
             action,
-            botActionEnabled(bot.status, action) &&
+            !(
+              action === "start" &&
+              pending.some((o: any) => o.recovery_requested_at)
+            ) &&
+              botActionEnabled(bot.status, action) &&
               req.identity!.role !== "VIEWER",
           ]),
         ),

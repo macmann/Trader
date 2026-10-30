@@ -1,3 +1,4 @@
+import { recoverMissingOrder } from "./order-recovery.ts";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
@@ -339,6 +340,10 @@ export async function perpetualTick(
       executionEnabled: runtime.executionEnabled,
       ...extra,
     });
+  if (await recoverMissingOrder(db, tid, bot, adapter)) {
+    report("STOPPED", ["RECOVERY_CHECK_COMPLETED"]);
+    return;
+  }
   report("RECONCILING");
   await adapter.getInstrument(bot.symbol);
   if (

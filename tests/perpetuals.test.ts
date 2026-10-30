@@ -750,3 +750,164 @@ test("stopping an uncertain bot cancels resume intent while retaining late fills
   assert.equal((await state(f)).orders[0].state, "Filled");
   assert.equal(f.broker.creates, 1);
 });
+
+async function missingOrderFixture() {
+  const f = await fixture();
+  f.broker.placeOrder = async () => {
+    f.broker.creates++;
+    throw Error("TIMEOUT");
+  };
+  await run(f);
+  await tenant(f.tid, async (db) => {
+    await db.query(
+      "UPDATE exchange_connections SET provider='OKX' WHERE id=$1",
+      [f.cid],
+    );
+    await db.query(
+      "UPDATE bots SET status='STOPPED',execution_resume_requested=false WHERE id=$1",
+      [f.bid],
+    );
+    await db.query(
+      "UPDATE orders SET created_at=now()-interval '1 day',recovery_requested_at=now(),recovery_confirmed_by=$2 WHERE bot_id=$1",
+      [f.bid, f.uid],
+    );
+  });
+  return f;
+}
+test("operator-confirmed missing order is resolved only after empty exchange checks and stays stopped", async () => {
+  const f = await missingOrderFixture();
+  await run(f);
+  const s = await state(f);
+  assert.equal(s.orders[0].state, "Cancelled");
+  assert.equal(s.orders[0].recovery_requested_at, null);
+  assert.equal(f.broker.creates, 1);
+  await run(f);
+  assert.equal(f.broker.creates, 1);
+  const result = await tenant(
+    f.tid,
+    async (db) =>
+      (
+        await db.query(
+          "SELECT data FROM order_events WHERE order_id=$1 AND event_key='operator-recovery'",
+          [s.orders[0].id],
+        )
+      ).rows[0],
+  );
+  assert.equal(result.data.confirmedBy, f.uid);
+  assert.equal(result.data.exchangeCancellation, false);
+  assert.equal(
+    (
+      await tenant(
+        f.tid,
+        async (db) =>
+          (await db.query("SELECT status FROM bots WHERE id=$1", [f.bid]))
+            .rows[0],
+      )
+    ).status,
+    "STOPPED",
+  );
+});
+test("missing-order recovery refuses exchange evidence, local inventory and unsupported history", async () => {
+  for (const conflict of [
+    "order",
+    "position",
+    "fill",
+    "local",
+    "old",
+  ] as const) {
+    const f = await missingOrderFixture();
+    if (conflict === "order")
+      f.broker.getOrder = async () => ({
+        list: [{ orderId: "found", orderStatus: "Filled" }],
+      });
+    if (conflict === "position")
+      f.broker.external = [
+        {
+          quantity: "1",
+          direction: "LONG",
+          entryPrice: "100",
+          liquidationPrice: "0",
+          leverage: "1",
+          isolated: true,
+        },
+      ];
+    if (conflict === "fill")
+      f.broker.fills = [{ execId: "unexpected", execQty: "1" }];
+    if (conflict === "local")
+      await tenant(f.tid, (db) =>
+        db.query("UPDATE positions SET quantity=1,cost=100 WHERE bot_id=$1", [
+          f.bid,
+        ]),
+      );
+    if (conflict === "old")
+      await tenant(f.tid, (db) =>
+        db.query(
+          "UPDATE orders SET created_at=now()-interval '8 days' WHERE bot_id=$1",
+          [f.bid],
+        ),
+      );
+    await run(f);
+    assert.equal((await state(f)).orders[0].state, "UNKNOWN", conflict);
+    assert.equal(
+      (await state(f)).orders[0].recovery_requested_at,
+      null,
+      conflict,
+    );
+    assert.equal(f.broker.creates, 1);
+  }
+});
+test("exchange outage during assisted recovery retains the unknown order and pending request", async () => {
+  const f = await missingOrderFixture();
+  f.broker.getOpenOrders = async () => {
+    throw Error("EXCHANGE_UNAVAILABLE");
+  };
+  await assert.rejects(run(f), /EXCHANGE_UNAVAILABLE/);
+  const o = (await state(f)).orders[0];
+  assert.equal(o.state, "UNKNOWN");
+  assert.ok(o.recovery_requested_at);
+});
+
+test("assisted recovery follows fill pagination and refuses activity on a later page", async () => {
+  const f = await missingOrderFixture();
+  let pages = 0;
+  f.broker.getExecutions = (async (cursor?: string) => {
+    pages++;
+    return cursor
+      ? { list: [{ execId: "late-page-fill" }] }
+      : { list: [], nextPageCursor: "next" };
+  }) as any;
+  await run(f);
+  assert.equal(pages, 2);
+  assert.equal((await state(f)).orders[0].state, "UNKNOWN");
+});
+test("incomplete recovery pages never clear an uncertain order", async () => {
+  const f = await missingOrderFixture();
+  f.broker.getOpenOrders = (async () => ({
+    list: [],
+    nextPageCursor: "repeat",
+  })) as any;
+  await assert.rejects(run(f), /INVALID_RECONCILIATION_CURSOR/);
+  const o = (await state(f)).orders[0];
+  assert.equal(o.state, "UNKNOWN");
+  assert.ok(o.recovery_requested_at);
+});
+
+test("pending operator recovery can complete after a worker error changed the bot to risk locked", async () => {
+  const f = await missingOrderFixture();
+  await tenant(f.tid, (db) =>
+    db.query("UPDATE bots SET status='RISK_LOCKED' WHERE id=$1", [f.bid]),
+  );
+  await run(f);
+  assert.equal((await state(f)).orders[0].state, "Cancelled");
+  assert.equal(
+    (
+      await tenant(
+        f.tid,
+        async (db) =>
+          (await db.query("SELECT status FROM bots WHERE id=$1", [f.bid]))
+            .rows[0],
+      )
+    ).status,
+    "STOPPED",
+  );
+});
