@@ -1356,3 +1356,50 @@ label small {
 .order-recovery input[type="password"] {
   max-width: 360px;
 }
+
+.login-chat-widget {
+  position: fixed;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+.login-chat-launcher {
+  background: #b7f779;
+  color: #14200e;
+  padding: 14px 20px;
+  border-radius: 999px;
+  font-weight: 700;
+  box-shadow: 0 6px 24px #0005;
+}
+.login-chat-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(420px, calc(100vw - 40px));
+  height: min(720px, calc(100dvh - 110px));
+  overflow: hidden;
+  background: #121c28;
+  border: 1px solid #334154;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px #0008;
+}
+.login-chat-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #334154;
+}
+.login-chat-panel header button {
+  padding: 6px 10px;
+}
+.login-chat-panel iframe {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  background: #fff;
+}

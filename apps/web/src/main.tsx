@@ -1,3 +1,4 @@
+import { LoginChatWidget } from "./LoginChatWidget.tsx";
 import { timeframeLabel } from "../../../packages/trading/src/timeframes.ts";
 import { AdminUsers } from "./AdminUsers.tsx";
 import {
@@ -271,6 +272,7 @@ function App() {
   if (!user)
     return (
       <main className="auth">
+        {authMode === "login" && <LoginChatWidget />}
         <div className="brand">
           ◈ TRADER<span>TESTNET</span>
         </div>
